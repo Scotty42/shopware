@@ -83,9 +83,28 @@ Shopware reserves `/api/integration/...` for its own integration entity. The plu
 
 ### Authentication
 
-Phase 1 uses Shopware's existing OAuth2 Admin API token (`/api/oauth/token`, password grant). The plugin's routes are registered in the `api` route scope and are therefore protected by the same token validation as all other Admin API routes.
+Two auth methods are supported, both via Shopware's OAuth2 token endpoint (`/api/oauth/token`):
 
-Future phases will introduce dedicated API key or mTLS authentication at the gateway level, with Shopware as an internal backend only.
+**1. Password Grant (development/admin use)**
+```bash
+curl -X POST /api/oauth/token \
+  -d '{"grant_type":"password","client_id":"administration","username":"admin","password":"...","scopes":"write"}'
+```
+
+**2. Client Credentials Grant (service-to-service, recommended)**
+
+A dedicated Shopware Integration user (`order-integration-client`) is created with limited scope (`admin: false`). Services authenticate with their `accessKey` and `secretAccessKey`:
+
+```bash
+curl -X POST /api/oauth/token \
+  -d '{"grant_type":"client_credentials","client_id":"<SHOPWARE_INTEGRATION_ACCESS_KEY>","client_secret":"<SHOPWARE_INTEGRATION_SECRET>"}'
+```
+
+The integration user credentials are stored in `.env.test` (gitignored). See `.env.test.dist` for required keys.
+
+Plugin routes are registered in the `api` route scope — Shopware validates the Bearer token on every request. No valid token → `401 Unauthorized`.
+
+Future phases will add mTLS at the gateway level and ACL role-based scope restrictions per integration.
 
 ### Domain status mapping
 
@@ -196,7 +215,7 @@ cd /var/www/shopware
 
 | Phase | Description |
 |---|---|
-| **1 (current)** | Plugin skeleton, `GET /v1/orders`, OAuth2 via Admin token, shell-based tests |
+| **1 (current)** | Plugin skeleton, `GET /v1/orders` + `GET /v1/orders/{id}`, cursor pagination, filters, RFC 9457 errors, OAuth2 password grant + client credentials, 13-test suite |
 | **2** | `POST /v1/orders` via `CartService` + `OrderConverter` (Path 2 from spike), `PUT /v1/orders/{id}/status` state machine transitions |
 | **3** | `PATCH /v1/orders/{id}`, `DELETE /v1/orders/{id}` (soft cancel), delivery sub-resource |
 | **4** | Read projection fed by Shopware business events — decouple read traffic from Shopware DB |
