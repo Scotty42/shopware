@@ -1,0 +1,1788 @@
+openapi: 3.1.0
+info:
+  title: Order Lifecycle API
+  version: 1.0.0
+  summary: Service-to-service REST API for managing the order lifecycle on top of Shopware 6.
+  description: |
+    A versioned, machine-to-machine REST facade in front of the Shopware 6 Admin API.
+    Exposes the order lifecycle (create, read, update attributes, status transitions,
+    completion, cancellation, deletion) as a stable, domain-shaped contract.
+
+    Not intended for human/browser use. All requests require TLS 1.2+; production
+    deployments require mTLS plus one of OAuth2 client credentials or API key.
+
+    See `order-api-concept.md` for the architecture rationale.
+  contact:
+    name: API Owner
+    email: api-owner@example.com
+  license:
+    name: Proprietary
+servers:
+  - url: https://orders.example.com/v1
+    description: Production
+  - url: https://orders.staging.example.com/v1
+    description: Staging
+
+tags:
+  - name: Orders
+    description: Order resource — create, read, update, delete.
+  - name: Status
+    description: Lifecycle status transitions.
+  - name: Sub-statuses
+    description: Payment and delivery status (read + transitions).
+  - name: Events
+    description: Audit/state history for an order.
+  - name: Deliveries
+    description: |
+      Shipment-level data on an order. One order can have multiple deliveries
+      (split shipments). The ERP / fulfillment partner is the master of this data.
+  - name: Shipment Events
+    description: |
+      Inbound channel for the ERP to push fulfillment-partner events
+      (shipped, in_transit, delivered, exception). High-volume, batched, async.
+  - name: Webhooks
+    description: Subscriber-managed push notifications for order events.
+
+# Default: every operation requires mTLS at the transport layer AND one of
+# OAuth2 client credentials (preferred) or API key. mTLS is listed alongside
+# the other schemes so codegen tools surface it; in practice it is enforced
+# at the gateway and not optional.
+security:
+  - mTLS: []
+    oauth2ClientCredentials: [orders:read]
+  - mTLS: []
+    apiKey: []
+
+paths:
+  /orders:
+    get:
+      tags: [Orders]
+      summary: List orders
+      operationId: listOrders
+      description: |
+        Cursor-paginated list of orders. Supports a small allow-list of filters and sort keys.
+      security:
+        - mTLS: []
+          oauth2ClientCredentials: [orders:read]
+        - mTLS: []
+          apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/Traceparent'
+        - name: status
+          in: query
+          description: Filter by domain status.
+          schema:
+            $ref: '#/components/schemas/OrderStatus'
+        - name: customerId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: salesChannelId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: createdAfter
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: createdBefore
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: sort
+          in: query
+          description: 'Format: `field:asc|desc`. Allowed fields: `createdAt`, `updatedAt`, `orderNumber`.'
+          schema:
+            type: string
+            pattern: '^(createdAt|updatedAt|orderNumber):(asc|desc)$'
+            default: createdAt:desc
+        - name: cursor
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        '200':
+          description: A page of orders.
+          headers:
+            RateLimit-Limit: { $ref: '#/components/headers/RateLimitLimit' }
+            RateLimit-Remaining: { $ref: '#/components/headers/RateLimitRemaining' }
+            RateLimit-Reset: { $ref: '#/components/headers/RateLimitReset' }
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderPage'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '5XX': { $ref: '#/components/responses/ServerError' }
+    post:
+      tags: [Orders]
+      summary: Create an order
+      operationId: createOrder
+      description: |
+        Create a new order. Idempotent via the `Idempotency-Key` header — required.
+        Replaying the same key with the same body returns the original response;
+        same key with a different body returns 409.
+      security:
+        - mTLS: []
+          oauth2ClientCredentials: [orders:write]
+        - mTLS: []
+          apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Traceparent'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderCreate'
+      responses:
+        '201':
+          description: Order created (synchronous path).
+          headers:
+            Location:
+              description: URL of the new order.
+              schema: { type: string, format: uri }
+            ETag:
+              schema: { type: string }
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '202':
+          description: |
+            Accepted for async processing (queued). Returned when the facade is in
+            queue-mode or when the client opts in via `Prefer: respond-async`.
+            Subscribe via webhook (`order.created`) or poll the job URL.
+          headers:
+            Location:
+              description: Job status URL.
+              schema: { type: string, format: uri }
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AsyncJob'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503':
+          description: Backpressure — Shopware or the write queue is saturated.
+          headers:
+            Retry-After:
+              schema: { type: integer }
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '5XX': { $ref: '#/components/responses/ServerError' }
+
+  /orders/{orderId}:
+    parameters:
+      - $ref: '#/components/parameters/OrderId'
+      - $ref: '#/components/parameters/Traceparent'
+    get:
+      tags: [Orders]
+      summary: Get an order
+      operationId: getOrder
+      security:
+        - mTLS: []
+          oauth2ClientCredentials: [orders:read]
+        - mTLS: []
+          apiKey: []
+      parameters:
+        - name: If-None-Match
+          in: header
+          schema: { type: string }
+        - name: If-Modified-Since
+          in: header
+          schema: { type: string }
+      responses:
+        '200':
+          description: The order.
+          headers:
+            ETag: { schema: { type: string } }
+            Last-Modified: { schema: { type: string } }
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '304':
+          description: Not modified.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '5XX': { $ref: '#/components/responses/ServerError' }
+    patch:
+      tags: [Orders]
+      summary: Update mutable attributes of an order
+      operationId: patchOrder
+      description: |
+        Partial update of mutable fields: `customerComment`, `tags`, `customFields`, addresses.
+        Status is not changed here — use `PUT /orders/{id}/status`.
+        Requires `If-Match` (optimistic concurrency) and `Idempotency-Key`.
+      security:
+        - mTLS: []
+          oauth2ClientCredentials: [orders:write]
+        - mTLS: []
+          apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema:
+              $ref: '#/components/schemas/OrderPatch'
+      responses:
+        '200':
+          description: Updated order.
+          headers:
+            ETag: { schema: { type: string } }
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '5XX': { $ref: '#/components/responses/ServerError' }
+    delete:
+      tags: [Orders]
+      summary: Cancel or hard-delete an order
+      operationId: deleteOrder
+      description: |
+        Soft delete by default: transitions order to `cancelled` and retains the record.
+        Pass `?hard=true` to permanently delete — requires scope `orders:hard_delete`.
+        Hard deletion is rejected by Shopware for orders with completed payments
+        (surfaced as 409 Conflict).
+      security:
+        - mTLS: []
+          oauth2ClientCredentials: [orders:write]
+        - mTLS: []
+          apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: hard
+          in: query
+          schema: { type: boolean, default: false }
+        - name: reason
+          in: query
+          description: Free-text reason recorded in the audit log.
+          schema: { type: string, maxLength: 500 }
+      responses:
+        '204':
+          description: Deleted (soft or hard).
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '5XX': { $ref: '#/components/responses/ServerError' }
+
+  /orders/{orderId}/status:
+    parameters:
+      - $ref: '#/components/parameters/OrderId'
+      - $ref: '#/components/parameters/Traceparent'
+    put:
+      tags: [Status]
+      summary: Transition the order's domain status
+      operationId: setOrderStatus
+      description: |
+        Drives the domain state machine (`open` → `in_progress` → `completed`/`cancelled`).
+        Invalid transitions return 409. The facade maps to the corresponding Shopware
+        `order.state` transition internally.
+      security:
+        - mTLS: []
+          oauth2ClientCredentials: [orders:status]
+        - mTLS: []
+          apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StatusTransition'
+      responses:
+        '200':
+          description: Transition applied.
+          headers:
+            ETag: { schema: { type: string } }
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '5XX': { $ref: '#/components/responses/ServerError' }
+
+  /orders/{orderId}/payment-status:
+    parameters:
+      - $ref: '#/components/parameters/OrderId'
+      - $ref: '#/components/parameters/Traceparent'
+    put:
+      tags: [Sub-statuses]
+      summary: Transition the payment status
+      operationId: setPaymentStatus
+      description: |
+        Maps to the Shopware `order_transaction.state` machine.
+        Valid transitions include `paid`, `authorized`, `refunded`, `refunded_partially`,
+        `failed`, `reopen` — governed by the source state.
+      security:
+        - mTLS: []
+          oauth2ClientCredentials: [orders:status]
+        - mTLS: []
+          apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentStatusTransition'
+      responses:
+        '200':
+          description: Transition applied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '5XX': { $ref: '#/components/responses/ServerError' }
+
+  /orders/{orderId}/delivery-status:
+    parameters:
+      - $ref: '#/components/parameters/OrderId'
+      - $ref: '#/components/parameters/Traceparent'
+    put:
+      tags: [Sub-statuses]
+      summary: Transition the delivery status
+      operationId: setDeliveryStatus
+      description: |
+        Maps to the Shopware `order_delivery.state` machine.
+        Valid transitions include `ship`, `ship_partially`, `return`, `return_partially`, `retour`.
+      security:
+        - mTLS: []
+          oauth2ClientCredentials: [orders:status]
+        - mTLS: []
+          apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeliveryStatusTransition'
+      responses:
+        '200':
+          description: Transition applied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '5XX': { $ref: '#/components/responses/ServerError' }
+
+  /orders/{orderId}/events:
+    parameters:
+      - $ref: '#/components/parameters/OrderId'
+      - $ref: '#/components/parameters/Traceparent'
+    get:
+      tags: [Events]
+      summary: List state transitions / audit events for an order
+      operationId: listOrderEvents
+      security:
+        - mTLS: []
+          oauth2ClientCredentials: [orders:read]
+        - mTLS: []
+          apiKey: []
+      parameters:
+        - name: cursor
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Page of audit events.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventPage'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '5XX': { $ref: '#/components/responses/ServerError' }
+
+  /orders/{orderId}/deliveries:
+    parameters:
+      - $ref: '#/components/parameters/OrderId'
+      - $ref: '#/components/parameters/Traceparent'
+    get:
+      tags: [Deliveries]
+      summary: List deliveries (shipments) on an order
+      operationId: listDeliveries
+      description: |
+        Returns all deliveries attached to the order. Most orders have one delivery;
+        split shipments have more. ERP-driven data: tracking codes, carrier, dates,
+        actual line-item allocation.
+      security:
+        - mTLS: []
+          oauth2ClientCredentials: [deliveries:read]
+        - mTLS: []
+          apiKey: []
+      responses:
+        '200':
+          description: Page of deliveries (small, usually 1–3 items).
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryList'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '5XX': { $ref: '#/components/responses/ServerError' }
+    post:
+      tags: [Deliveries]
+      summary: Add a delivery (split shipment)
+      operationId: createDelivery
+      description: |
+        Creates an additional delivery on the order. Typical caller: the ERP, when
+        the fulfillment plan splits the order across multiple shipments
+        (e.g. backorder, multi-warehouse). Idempotent via Idempotency-Key.
+      security:
+        - mTLS: []
+          oauth2ClientCredentials: [deliveries:write]
+        - mTLS: []
+          apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeliveryCreate'
+      responses:
+        '201':
+          description: Delivery created.
+          headers:
+            Location:
+              schema: { type: string, format: uri }
+            ETag:
+              schema: { type: string }
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Delivery' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '5XX': { $ref: '#/components/responses/ServerError' }
+
+  /orders/{orderId}/deliveries/{deliveryId}:
+    parameters:
+      - $ref: '#/components/parameters/OrderId'
+      - name: deliveryId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - $ref: '#/components/parameters/Traceparent'
+    get:
+      tags: [Deliveries]
+      summary: Get a delivery
+      operationId: getDelivery
+      security:
+        - mTLS: []
+          oauth2ClientCredentials: [deliveries:read]
+        - mTLS: []
+          apiKey: []
+      responses:
+        '200':
+          description: The delivery.
+          headers:
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Delivery' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '5XX': { $ref: '#/components/responses/ServerError' }
+    patch:
+      tags: [Deliveries]
+      summary: Update mutable delivery fields
+      operationId: patchDelivery
+      description: |
+        Update tracking codes, carrier, planned/actual dates, shipping address.
+        Status is changed via the dedicated status endpoint, not here.
+      security:
+        - mTLS: []
+          oauth2ClientCredentials: [deliveries:write]
+        - mTLS: []
+          apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: { $ref: '#/components/schemas/DeliveryPatch' }
+      responses:
+        '200':
+          description: Updated delivery.
+          headers:
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Delivery' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '5XX': { $ref: '#/components/responses/ServerError' }
+
+  /orders/{orderId}/deliveries/{deliveryId}/status:
+    parameters:
+      - $ref: '#/components/parameters/OrderId'
+      - name: deliveryId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - $ref: '#/components/parameters/Traceparent'
+    put:
+      tags: [Deliveries]
+      summary: Transition delivery status (single delivery)
+      operationId: setDeliveryStatusForDelivery
+      description: |
+        Per-delivery transition (Shopware `order_delivery.state`). Use this when
+        a specific shipment changes state; the order-level `PUT /orders/{id}/delivery-status`
+        is a convenience for single-delivery orders.
+      security:
+        - mTLS: []
+          oauth2ClientCredentials: [deliveries:write]
+        - mTLS: []
+          apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DeliveryStatusTransition' }
+      responses:
+        '200':
+          description: Transition applied.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Delivery' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '5XX': { $ref: '#/components/responses/ServerError' }
+
+  /shipment-events:
+    post:
+      tags: [Shipment Events]
+      summary: Batch-ingest fulfillment events from the ERP / FFP
+      operationId: ingestShipmentEvents
+      description: |
+        Primary inbound channel for the ERP. The ERP normalises fulfillment-partner
+        webhooks (pickup, in-transit, delivered, exception, returned) and batches
+        them here. Up to 500 events per call.
+
+        Each event carries its own `eventId` (idempotent per-event) and resolves to
+        a delivery either by `deliveryId` (the facade's id) or by
+        `externalShipmentReference` (the ERP's id, registered on the delivery).
+        Mixed batches are allowed.
+
+        Returns 202 with a per-event acceptance summary. Actual application to
+        Shopware happens asynchronously via the write queue. Failures are reported
+        per event, not as a whole-batch failure.
+
+        Auth: ERP-class client. Scope `shipment-events:ingest`. Higher rate-limit
+        class than generic callers.
+      security:
+        - mTLS: []
+          oauth2ClientCredentials: [shipment-events:ingest]
+        - mTLS: []
+          apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Traceparent'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ShipmentEventBatch' }
+      responses:
+        '202':
+          description: Batch accepted. Per-event status is in the body.
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShipmentEventBatchAck' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '413':
+          description: Batch too large (more than 500 events).
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503':
+          description: Backpressure — queue saturated.
+          headers:
+            Retry-After:
+              schema: { type: integer }
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '5XX': { $ref: '#/components/responses/ServerError' }
+
+  /webhook-subscriptions:
+    get:
+      tags: [Webhooks]
+      summary: List webhook subscriptions
+      operationId: listWebhookSubscriptions
+      description: |
+        Returns the caller's own webhook subscriptions. Callers see only what they own
+        (scoped by mTLS cert subject or OAuth client_id).
+      security:
+        - mTLS: []
+          oauth2ClientCredentials: [webhooks:manage]
+        - mTLS: []
+          apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/Traceparent'
+        - name: cursor
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Page of subscriptions.
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSubscriptionPage'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '5XX': { $ref: '#/components/responses/ServerError' }
+    post:
+      tags: [Webhooks]
+      summary: Create a webhook subscription
+      operationId: createWebhookSubscription
+      description: |
+        Register a URL to receive order event notifications. The caller is the owner;
+        each subscription is scoped to the authenticated client. The server returns
+        a long random `signingSecret` once at creation — used by the subscriber to
+        verify the HMAC signature on every delivery. Store it; it is not retrievable.
+
+        Recommended subscriber endpoint security: TLS, validate `X-Order-API-Signature`
+        (HMAC-SHA256 over the raw body using the signing secret), validate
+        `X-Order-API-Timestamp` is within ±5 minutes, accept idempotently using
+        `id` from the payload (the same event may be re-delivered).
+      security:
+        - mTLS: []
+          oauth2ClientCredentials: [webhooks:manage]
+        - mTLS: []
+          apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Traceparent'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookSubscriptionCreate'
+      responses:
+        '201':
+          description: Subscription created. `signingSecret` is included **only** in this response.
+          headers:
+            Location:
+              schema: { type: string, format: uri }
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSubscriptionCreated'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '5XX': { $ref: '#/components/responses/ServerError' }
+      # OpenAPI 3.1 callbacks declare the shape of out-of-band requests the
+      # API will make to the subscriber's URL.
+      callbacks:
+        orderEvent:
+          '{$request.body#/url}':
+            post:
+              summary: Delivery from the Order API to the subscriber.
+              description: |
+                Delivered for every event the subscription matches. The body is the
+                `OrderEventNotification` schema. The subscriber must respond 2xx
+                within 5 seconds; non-2xx or timeout triggers exponential-backoff
+                retry for up to 24h. The same `id` may be delivered more than once.
+              parameters:
+                - name: X-Order-API-Signature
+                  in: header
+                  required: true
+                  schema: { type: string }
+                  description: '`sha256=<hex>` HMAC-SHA256 over the raw body using the signing secret.'
+                - name: X-Order-API-Timestamp
+                  in: header
+                  required: true
+                  schema: { type: string }
+                  description: ISO-8601 UTC timestamp at which the delivery was signed.
+                - name: X-Order-API-Delivery-Id
+                  in: header
+                  required: true
+                  schema: { type: string, format: uuid }
+                  description: Unique delivery attempt id (re-deliveries reuse the event id but not this id).
+              requestBody:
+                required: true
+                content:
+                  application/json:
+                    schema:
+                      $ref: '#/components/schemas/OrderEventNotification'
+              responses:
+                '2XX':
+                  description: Delivered. Any 2xx counts as success.
+                '4XX':
+                  description: Subscriber rejected. Counted as failure but not retried beyond the default budget.
+                '5XX':
+                  description: Subscriber error. Retried with exponential backoff.
+
+  /webhook-subscriptions/{subscriptionId}:
+    parameters:
+      - name: subscriptionId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - $ref: '#/components/parameters/Traceparent'
+    get:
+      tags: [Webhooks]
+      summary: Get a webhook subscription
+      operationId: getWebhookSubscription
+      security:
+        - mTLS: []
+          oauth2ClientCredentials: [webhooks:manage]
+        - mTLS: []
+          apiKey: []
+      responses:
+        '200':
+          description: The subscription (without the signing secret).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookSubscription' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '5XX': { $ref: '#/components/responses/ServerError' }
+    delete:
+      tags: [Webhooks]
+      summary: Delete a webhook subscription
+      operationId: deleteWebhookSubscription
+      security:
+        - mTLS: []
+          oauth2ClientCredentials: [webhooks:manage]
+        - mTLS: []
+          apiKey: []
+      responses:
+        '204':
+          description: Deleted.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '5XX': { $ref: '#/components/responses/ServerError' }
+
+components:
+
+  securitySchemes:
+    mTLS:
+      type: mutualTLS
+      description: |
+        Client presents an X.509 certificate signed by the API's trusted CA.
+        Subject CN/SAN is matched against an allow-list and becomes the principal.
+        Enforced at the API gateway / service mesh.
+    oauth2ClientCredentials:
+      type: oauth2
+      description: |
+        OAuth 2.0 Client Credentials grant. Short-lived JWT access tokens (≤ 1h).
+        Use in addition to mTLS for fine-grained scope-based authorization.
+      flows:
+        clientCredentials:
+          tokenUrl: https://auth.example.com/oauth/token
+          refreshUrl: https://auth.example.com/oauth/token
+          scopes:
+            orders:read: Read orders and events.
+            orders:write: Create and modify orders (excluding hard delete).
+            orders:status: Transition status, payment-status, delivery-status.
+            orders:hard_delete: Permanently delete orders. Restricted.
+            webhooks:manage: Create, list, and delete webhook subscriptions.
+            deliveries:read: Read shipment / delivery data.
+            deliveries:write: Create and modify deliveries (tracking, addresses, state).
+            shipment-events:ingest: |
+              ERP/FFP-class scope. Batch-ingest shipment events.
+              Higher rate-limit class.
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: |
+        Fallback only. Acceptable behind mTLS for partners that cannot perform OAuth2.
+        Keys are stored hashed at rest and rotated quarterly.
+
+  parameters:
+    OrderId:
+      name: orderId
+      in: path
+      required: true
+      description: Order UUID (the facade's own id, 1:1 with Shopware order id).
+      schema:
+        type: string
+        format: uuid
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        Client-generated UUIDv4. The server caches `{key, body-hash, response}` for 24h.
+        Replay with same body → same response. Replay with different body → 409.
+      schema:
+        type: string
+        format: uuid
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: ETag of the resource as last seen by the client. Mismatch yields 412.
+      schema:
+        type: string
+    Traceparent:
+      name: traceparent
+      in: header
+      required: false
+      description: W3C Trace Context.
+      schema:
+        type: string
+
+  headers:
+    RateLimitLimit:
+      schema: { type: integer }
+      description: Requests allowed in the current window.
+    RateLimitRemaining:
+      schema: { type: integer }
+      description: Requests remaining in the current window.
+    RateLimitReset:
+      schema: { type: integer }
+      description: Seconds until the rate limit window resets.
+    XRequestId:
+      schema: { type: string }
+      description: Server-generated request id for log correlation.
+
+  responses:
+    BadRequest:
+      description: Malformed request.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unauthorized:
+      description: Missing or invalid credentials (mTLS cert / token / API key).
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Forbidden:
+      description: Authenticated but lacks the required scope.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotFound:
+      description: Resource does not exist.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Conflict:
+      description: Resource state conflicts with the requested operation (e.g., invalid status transition, idempotency-key reused with different body).
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    PreconditionFailed:
+      description: '`If-Match` ETag did not match — concurrent modification.'
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    UnprocessableEntity:
+      description: Request was syntactically valid but semantically invalid (field validation errors).
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    TooManyRequests:
+      description: Rate limit exceeded.
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ServerError:
+      description: Unexpected server error.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+  schemas:
+
+    OrderStatus:
+      type: string
+      enum: [open, in_progress, completed, cancelled]
+      description: |
+        Domain status, mapped internally to Shopware `order.state`:
+        `open` → open, `in_progress` → in_progress, `completed` → completed,
+        `cancelled` → cancelled.
+
+    PaymentStatus:
+      type: string
+      description: Mirror of Shopware `order_transaction.state` technical name.
+      enum: [open, in_progress, paid, paid_partially, authorized, refunded, refunded_partially, failed, cancelled, chargeback, unconfirmed, reminded]
+
+    DeliveryStatus:
+      type: string
+      description: Mirror of Shopware `order_delivery.state` technical name.
+      enum: [open, shipped, shipped_partially, returned, returned_partially, cancelled]
+
+    Money:
+      type: object
+      required: [amount, currency]
+      properties:
+        amount:
+          type: number
+          format: double
+          description: Monetary amount in major units (e.g. 19.99).
+        currency:
+          type: string
+          description: ISO 4217 currency code.
+          example: EUR
+          pattern: '^[A-Z]{3}$'
+
+    Address:
+      type: object
+      required: [firstName, lastName, street, zipcode, city, countryCode]
+      properties:
+        salutation: { type: string, nullable: true }
+        title: { type: string, nullable: true }
+        firstName: { type: string }
+        lastName: { type: string }
+        company: { type: string, nullable: true }
+        street: { type: string }
+        additionalAddressLine1: { type: string, nullable: true }
+        additionalAddressLine2: { type: string, nullable: true }
+        zipcode: { type: string }
+        city: { type: string }
+        countryCode:
+          type: string
+          description: ISO 3166-1 alpha-2.
+          pattern: '^[A-Z]{2}$'
+          example: DE
+        stateCode: { type: string, nullable: true }
+        phoneNumber: { type: string, nullable: true }
+        vatId: { type: string, nullable: true }
+
+    LineItem:
+      type: object
+      required: [type, label, quantity, unitPrice]
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        productId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Shopware product id, if the line item maps to a catalog product.
+        type:
+          type: string
+          enum: [product, credit, discount, custom, promotion, container]
+        label: { type: string }
+        quantity:
+          type: integer
+          minimum: 1
+        unitPrice: { $ref: '#/components/schemas/Money' }
+        totalPrice:
+          allOf:
+            - $ref: '#/components/schemas/Money'
+          readOnly: true
+        sku: { type: string, nullable: true }
+        payload:
+          type: object
+          additionalProperties: true
+          description: Type-specific payload (e.g. promotion meta, product options).
+
+    Customer:
+      type: object
+      required: [email]
+      properties:
+        id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Shopware customer id. Null for guest orders.
+        email:
+          type: string
+          format: email
+        firstName: { type: string, nullable: true }
+        lastName: { type: string, nullable: true }
+        guest:
+          type: boolean
+          default: false
+
+    OrderCreate:
+      type: object
+      required: [salesChannelId, currency, customer, billingAddress, lineItems]
+      properties:
+        salesChannelId:
+          type: string
+          format: uuid
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+        customer:
+          $ref: '#/components/schemas/Customer'
+        billingAddress:
+          $ref: '#/components/schemas/Address'
+        shippingAddress:
+          allOf:
+            - $ref: '#/components/schemas/Address'
+          description: Defaults to billing address if omitted.
+          nullable: true
+        lineItems:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/LineItem'
+        paymentMethodId:
+          type: string
+          format: uuid
+          nullable: true
+        shippingMethodId:
+          type: string
+          format: uuid
+          nullable: true
+        customerComment:
+          type: string
+          nullable: true
+          maxLength: 5000
+        tags:
+          type: array
+          items: { type: string }
+        customFields:
+          type: object
+          additionalProperties: true
+          description: Free-form caller-defined metadata. Mapped 1:1 to Shopware customFields.
+
+    OrderPatch:
+      type: object
+      description: |
+        JSON Merge Patch (RFC 7396). Only the listed fields are mutable post-creation.
+        Setting a field to `null` clears it (where nullable).
+      properties:
+        customerComment: { type: string, nullable: true, maxLength: 5000 }
+        tags:
+          type: array
+          items: { type: string }
+        customFields:
+          type: object
+          additionalProperties: true
+        billingAddress:
+          $ref: '#/components/schemas/Address'
+        shippingAddress:
+          $ref: '#/components/schemas/Address'
+
+    Order:
+      type: object
+      required: [id, orderNumber, status, paymentStatus, deliveryStatus, currency, total, lineItems, billingAddress, customer, createdAt, updatedAt, version]
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        orderNumber:
+          type: string
+          readOnly: true
+          description: Human-facing order number, generated by Shopware.
+        version:
+          type: integer
+          readOnly: true
+          description: Monotonically increasing version, also returned as ETag.
+        salesChannelId: { type: string, format: uuid, readOnly: true }
+        status: { $ref: '#/components/schemas/OrderStatus' }
+        paymentStatus: { $ref: '#/components/schemas/PaymentStatus' }
+        deliveryStatus: { $ref: '#/components/schemas/DeliveryStatus' }
+        currency: { type: string, pattern: '^[A-Z]{3}$' }
+        subtotal: { $ref: '#/components/schemas/Money' }
+        shipping: { $ref: '#/components/schemas/Money' }
+        tax: { $ref: '#/components/schemas/Money' }
+        total: { $ref: '#/components/schemas/Money' }
+        customer: { $ref: '#/components/schemas/Customer' }
+        billingAddress: { $ref: '#/components/schemas/Address' }
+        shippingAddress:
+          allOf:
+            - $ref: '#/components/schemas/Address'
+          nullable: true
+        lineItems:
+          type: array
+          items: { $ref: '#/components/schemas/LineItem' }
+        deliveries:
+          type: array
+          description: |
+            Embedded shipment list for read convenience. Populated from the read
+            projection — for orders with many split shipments, prefer the dedicated
+            `/orders/{id}/deliveries` endpoint to avoid bloated payloads.
+          items: { $ref: '#/components/schemas/Delivery' }
+        customerComment: { type: string, nullable: true }
+        tags:
+          type: array
+          items: { type: string }
+        customFields:
+          type: object
+          additionalProperties: true
+        createdAt: { type: string, format: date-time, readOnly: true }
+        updatedAt: { type: string, format: date-time, readOnly: true }
+
+    OrderPage:
+      type: object
+      required: [items, page]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Order' }
+        page:
+          type: object
+          required: [limit]
+          properties:
+            limit: { type: integer }
+            nextCursor:
+              type: string
+              nullable: true
+              description: Cursor to fetch the next page; null when no more pages.
+
+    StatusTransition:
+      type: object
+      required: [status]
+      properties:
+        status: { $ref: '#/components/schemas/OrderStatus' }
+        reason:
+          type: string
+          maxLength: 500
+          description: Optional free-text rationale, recorded in the audit log.
+        occurredAt:
+          type: string
+          format: date-time
+          description: Optional caller-supplied timestamp of the business event.
+
+    PaymentStatusTransition:
+      type: object
+      required: [status]
+      properties:
+        status: { $ref: '#/components/schemas/PaymentStatus' }
+        reason: { type: string, maxLength: 500 }
+        occurredAt: { type: string, format: date-time }
+
+    DeliveryStatusTransition:
+      type: object
+      required: [status]
+      properties:
+        status: { $ref: '#/components/schemas/DeliveryStatus' }
+        reason: { type: string, maxLength: 500 }
+        occurredAt: { type: string, format: date-time }
+
+    Event:
+      type: object
+      required: [id, type, occurredAt]
+      properties:
+        id: { type: string, format: uuid }
+        type:
+          type: string
+          enum: [order.created, order.status_changed, order.payment_status_changed, order.delivery_status_changed, order.patched, order.cancelled, order.deleted]
+        occurredAt: { type: string, format: date-time }
+        actor:
+          type: string
+          description: Client identifier (mTLS cert subject or OAuth client_id).
+        from:
+          type: string
+          nullable: true
+        to:
+          type: string
+          nullable: true
+        reason:
+          type: string
+          nullable: true
+        traceId:
+          type: string
+          nullable: true
+
+    EventPage:
+      type: object
+      required: [items, page]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Event' }
+        page:
+          type: object
+          required: [limit]
+          properties:
+            limit: { type: integer }
+            nextCursor:
+              type: string
+              nullable: true
+
+    # RFC 9457 — Problem Details for HTTP APIs
+    Problem:
+      type: object
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          format: uri
+          description: URI identifying the problem type; SHOULD resolve to documentation.
+          example: https://errors.example.com/order/invalid_state_transition
+          default: about:blank
+        title:
+          type: string
+          description: Short, human-readable summary of the problem type.
+        status:
+          type: integer
+          description: HTTP status code.
+        detail:
+          type: string
+          description: Human-readable explanation specific to this occurrence.
+        instance:
+          type: string
+          format: uri
+          description: URI identifying this specific occurrence.
+        code:
+          type: string
+          description: Stable machine-readable error code.
+          example: order.invalid_state_transition
+        traceId:
+          type: string
+          description: Correlation id for log lookup.
+        errors:
+          type: array
+          description: Field-level validation errors (used with 422).
+          items:
+            type: object
+            required: [pointer, code, message]
+            properties:
+              pointer:
+                type: string
+                description: JSON Pointer (RFC 6901) to the offending field.
+                example: /lineItems/0/quantity
+              code:
+                type: string
+                example: must_be_positive
+              message:
+                type: string
+                example: quantity must be >= 1
+
+    AsyncJob:
+      type: object
+      description: Returned with 202 Accepted for async-processed mutations.
+      required: [jobId, status, createdAt]
+      properties:
+        jobId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [queued, in_progress, succeeded, failed]
+        resourceUrl:
+          type: string
+          format: uri
+          nullable: true
+          description: Set once the resource exists.
+        createdAt: { type: string, format: date-time }
+        error:
+          allOf:
+            - $ref: '#/components/schemas/Problem'
+          nullable: true
+
+    TrackingCode:
+      type: object
+      required: [code]
+      properties:
+        code:
+          type: string
+          description: Carrier tracking number / parcel id.
+          example: '1Z999AA10123456784'
+        carrier:
+          type: string
+          description: Carrier identifier (e.g. `dhl`, `ups`, `dpd`). Free-text, normalised by the facade.
+          example: dhl
+        url:
+          type: string
+          format: uri
+          nullable: true
+          description: Tracking URL the carrier (or ERP) supplies. Optional.
+
+    DeliveryPosition:
+      type: object
+      description: Which line items (and quantities) ship in this delivery.
+      required: [lineItemId, quantity]
+      properties:
+        lineItemId:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+          minimum: 1
+
+    Delivery:
+      type: object
+      description: |
+        A single shipment for an order. One order may have multiple deliveries
+        (split shipments). ERP is the master of tracking/dates/state on this entity.
+      required: [id, orderId, status, shippingAddress, positions, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        orderId:
+          type: string
+          format: uuid
+          readOnly: true
+        externalShipmentReference:
+          type: string
+          nullable: true
+          description: |
+            Stable identifier in the ERP. Used by `POST /shipment-events` to resolve
+            events without requiring the ERP to learn the facade's `id`.
+        status: { $ref: '#/components/schemas/DeliveryStatus' }
+        shippingMethod:
+          type: string
+          nullable: true
+          description: Carrier service (e.g. `dhl-paket`, `ups-express`).
+        carrier:
+          type: string
+          nullable: true
+          description: Top-level carrier name. Redundant with per-tracking-code carrier; kept for fast filtering.
+        trackingCodes:
+          type: array
+          items: { $ref: '#/components/schemas/TrackingCode' }
+        shippingAddress: { $ref: '#/components/schemas/Address' }
+        positions:
+          type: array
+          items: { $ref: '#/components/schemas/DeliveryPosition' }
+          description: Line-item allocation for this delivery. Sum across deliveries equals order line-item quantities (when fulfillment is complete).
+        plannedShipDate:
+          type: string
+          format: date-time
+          nullable: true
+          description: ERP/WMS planned ship date.
+        actualShipDate:
+          type: string
+          format: date-time
+          nullable: true
+          description: Timestamp from the `shipment.shipped` event.
+        expectedDeliveryDate:
+          type: string
+          format: date-time
+          nullable: true
+        actualDeliveryDate:
+          type: string
+          format: date-time
+          nullable: true
+          description: Timestamp from the `shipment.delivered` event (POD).
+        warehouseCode:
+          type: string
+          nullable: true
+          description: Originating warehouse / FFP location code.
+        shippingCosts: { $ref: '#/components/schemas/Money' }
+        customFields:
+          type: object
+          additionalProperties: true
+        createdAt: { type: string, format: date-time, readOnly: true }
+        updatedAt: { type: string, format: date-time, readOnly: true }
+
+    DeliveryCreate:
+      type: object
+      required: [positions, shippingAddress]
+      properties:
+        externalShipmentReference:
+          type: string
+        shippingMethod: { type: string }
+        carrier: { type: string }
+        trackingCodes:
+          type: array
+          items: { $ref: '#/components/schemas/TrackingCode' }
+        shippingAddress: { $ref: '#/components/schemas/Address' }
+        positions:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/DeliveryPosition' }
+        plannedShipDate: { type: string, format: date-time }
+        expectedDeliveryDate: { type: string, format: date-time }
+        warehouseCode: { type: string }
+        customFields:
+          type: object
+          additionalProperties: true
+
+    DeliveryPatch:
+      type: object
+      description: JSON Merge Patch (RFC 7396). Mutable fields only.
+      properties:
+        externalShipmentReference: { type: string }
+        shippingMethod: { type: string }
+        carrier: { type: string }
+        trackingCodes:
+          type: array
+          items: { $ref: '#/components/schemas/TrackingCode' }
+        shippingAddress: { $ref: '#/components/schemas/Address' }
+        plannedShipDate: { type: string, format: date-time, nullable: true }
+        actualShipDate: { type: string, format: date-time, nullable: true }
+        expectedDeliveryDate: { type: string, format: date-time, nullable: true }
+        actualDeliveryDate: { type: string, format: date-time, nullable: true }
+        warehouseCode: { type: string, nullable: true }
+        customFields:
+          type: object
+          additionalProperties: true
+
+    DeliveryList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Delivery' }
+
+    ShipmentEventType:
+      type: string
+      enum:
+        - shipment.created
+        - shipment.tracking_assigned
+        - shipment.shipped
+        - shipment.in_transit
+        - shipment.out_for_delivery
+        - shipment.delivered
+        - shipment.exception
+        - shipment.returned
+
+    ShipmentEvent:
+      type: object
+      description: |
+        One fulfillment event from the ERP. Resolves to a delivery by `deliveryId`
+        (facade id) or `externalShipmentReference` (ERP id). At least one must be set.
+      required: [eventId, type, occurredAt]
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          description: Per-event idempotency key. Re-posting the same eventId is a no-op.
+        type: { $ref: '#/components/schemas/ShipmentEventType' }
+        occurredAt:
+          type: string
+          format: date-time
+          description: When the underlying carrier/FFP event happened.
+        deliveryId:
+          type: string
+          format: uuid
+          nullable: true
+        externalShipmentReference:
+          type: string
+          nullable: true
+        orderId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Optional but recommended; used as fallback if delivery resolution fails.
+        trackingCodes:
+          type: array
+          items: { $ref: '#/components/schemas/TrackingCode' }
+        carrier:
+          type: string
+          nullable: true
+        location:
+          type: string
+          nullable: true
+          description: Scan location reported by the carrier (city, hub).
+        reasonCode:
+          type: string
+          nullable: true
+          description: 'For `exception` / `returned`: machine code (e.g. `address_invalid`, `recipient_absent`).'
+        reasonText:
+          type: string
+          nullable: true
+        signedBy:
+          type: string
+          nullable: true
+          description: 'For `delivered`: name of POD signer if provided.'
+        rawProviderPayload:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: |
+            Optional opaque pass-through of the original FFP event payload, for audit
+            and dispute resolution. The facade stores it but does not interpret it.
+      oneOf:
+        - required: [deliveryId]
+        - required: [externalShipmentReference]
+
+    ShipmentEventBatch:
+      type: object
+      required: [events]
+      properties:
+        events:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: { $ref: '#/components/schemas/ShipmentEvent' }
+
+    ShipmentEventAck:
+      type: object
+      required: [eventId, status]
+      properties:
+        eventId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [accepted, duplicate, rejected]
+          description: |
+            `accepted` — enqueued for application.
+            `duplicate` — same `eventId` seen before; safe no-op.
+            `rejected` — validation failed (delivery not found, mismatched order, etc.).
+        error:
+          allOf:
+            - $ref: '#/components/schemas/Problem'
+          nullable: true
+
+    ShipmentEventBatchAck:
+      type: object
+      required: [accepted, duplicates, rejected, results]
+      properties:
+        accepted:
+          type: integer
+          minimum: 0
+        duplicates:
+          type: integer
+          minimum: 0
+        rejected:
+          type: integer
+          minimum: 0
+        results:
+          type: array
+          items: { $ref: '#/components/schemas/ShipmentEventAck' }
+
+    WebhookEventType:
+      type: string
+      enum:
+        - order.created
+        - order.status_changed
+        - order.payment_status_changed
+        - order.delivery_status_changed
+        - order.patched
+        - order.cancelled
+        - order.deleted
+        - order.delivery_created
+        - order.delivery_tracking_updated
+        - order.delivery_shipped
+        - order.delivery_delivered
+        - order.delivery_exception
+        - order.delivery_returned
+
+    WebhookSubscriptionCreate:
+      type: object
+      required: [url, events]
+      properties:
+        url:
+          type: string
+          format: uri
+          description: HTTPS endpoint receiving deliveries. HTTP is rejected.
+          example: https://subscriber.example.com/hooks/orders
+        events:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/WebhookEventType' }
+        description:
+          type: string
+          maxLength: 500
+        filter:
+          type: object
+          description: Optional server-side filter; only matching events are delivered.
+          properties:
+            salesChannelId: { type: string, format: uuid }
+            status: { $ref: '#/components/schemas/OrderStatus' }
+
+    WebhookSubscription:
+      type: object
+      required: [id, url, events, ownerClientId, active, createdAt]
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        url: { type: string, format: uri }
+        events:
+          type: array
+          items: { $ref: '#/components/schemas/WebhookEventType' }
+        description: { type: string, nullable: true }
+        filter:
+          type: object
+          nullable: true
+          additionalProperties: true
+        ownerClientId:
+          type: string
+          description: Client (mTLS subject or OAuth client_id) that owns the subscription.
+          readOnly: true
+        active:
+          type: boolean
+          description: Auto-disabled after a configurable number of consecutive delivery failures.
+        createdAt: { type: string, format: date-time, readOnly: true }
+        lastDeliveryAt: { type: string, format: date-time, nullable: true, readOnly: true }
+        lastDeliveryStatus:
+          type: string
+          nullable: true
+          enum: [success, failure]
+          readOnly: true
+
+    WebhookSubscriptionCreated:
+      allOf:
+        - $ref: '#/components/schemas/WebhookSubscription'
+        - type: object
+          required: [signingSecret]
+          properties:
+            signingSecret:
+              type: string
+              description: |
+                Random secret (≥ 32 bytes, base64url). Used by the subscriber to verify
+                HMAC-SHA256 of every delivery body. Returned **only once** at creation.
+
+    WebhookSubscriptionPage:
+      type: object
+      required: [items, page]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/WebhookSubscription' }
+        page:
+          type: object
+          required: [limit]
+          properties:
+            limit: { type: integer }
+            nextCursor:
+              type: string
+              nullable: true
+
+    OrderEventNotification:
+      type: object
+      description: Payload delivered to subscriber URLs.
+      required: [id, type, occurredAt, orderId, data]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Stable event id. Re-deliveries reuse this id (use for idempotent consumption).
+        type: { $ref: '#/components/schemas/WebhookEventType' }
+        occurredAt: { type: string, format: date-time }
+        apiVersion:
+          type: string
+          example: v1
+        orderId:
+          type: string
+          format: uuid
+        actor:
+          type: string
+          description: Client that caused the event.
+        from:
+          type: string
+          nullable: true
+        to:
+          type: string
+          nullable: true
+        data:
+          oneOf:
+            - $ref: '#/components/schemas/Order'
+            - type: object
+              description: For deletion or minimal events, a reduced payload.
+              required: [orderId]
+              properties:
+                orderId: { type: string, format: uuid }
+                orderNumber: { type: string }
+        traceId:
+          type: string
+          nullable: true
