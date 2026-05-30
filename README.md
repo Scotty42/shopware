@@ -122,6 +122,8 @@ Lists orders with key fields. Loads associations: `lineItems`, `deliveries`, `tr
 }
 ```
 
+![Orders Overview](docs/assets/Admin_UI_Orders.png)
+
 **Query parameters:**
 - `limit` (int, default 50, max 200)
 
