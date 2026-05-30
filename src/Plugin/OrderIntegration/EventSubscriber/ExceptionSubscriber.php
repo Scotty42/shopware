@@ -7,7 +7,6 @@ use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Event\ExceptionEvent;
-use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 use Symfony\Component\HttpKernel\KernelEvents;
 
 class ExceptionSubscriber implements EventSubscriberInterface
@@ -23,29 +22,25 @@ class ExceptionSubscriber implements EventSubscriberInterface
     {
         $request = $event->getRequest();
 
-        // Only handle our plugin routes
         if (!str_starts_with($request->getPathInfo(), '/api/order-integration/')) {
             return;
         }
 
         $exception = $event->getThrowable();
-        $status = 500;
-        $code = 'internal_server_error';
 
-        if ($exception instanceof HttpExceptionInterface) {
-            $status = $exception->getStatusCode();
+        // Only handle our own exceptions — let Shopware handle auth errors
+        if (!$exception instanceof OrderNotFoundException) {
+            return;
         }
 
-        if ($exception instanceof OrderNotFoundException) {
-            $code = $exception->getErrorCode();
-        }
+        $status = $exception->getStatusCode();
 
         $event->setResponse(new JsonResponse([
-            'type'     => 'about:blank',
-            'title'    => Response::$statusTexts[$status] ?? 'Error',
-            'status'   => $status,
-            'detail'   => $exception->getMessage(),
-            'code'     => $code,
+            'type'   => 'about:blank',
+            'title'  => Response::$statusTexts[$status] ?? 'Error',
+            'status' => $status,
+            'detail' => $exception->getMessage(),
+            'code'   => $exception->getErrorCode(),
         ], $status, ['Content-Type' => 'application/problem+json']));
     }
 }

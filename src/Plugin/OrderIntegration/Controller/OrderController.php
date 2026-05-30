@@ -67,7 +67,7 @@ class OrderController extends AbstractController
                     new RangeFilter('createdAt', [RangeFilter::LT => $cursor['createdAt']]),
                     new MultiFilter(MultiFilter::CONNECTION_AND, [
                         new EqualsFilter('createdAt', $cursor['createdAt']),
-                        new NotFilter(NotFilter::RELATION_AND, [
+                        new NotFilter(MultiFilter::CONNECTION_AND, [
                             new EqualsFilter('id', $cursor['id']),
                         ]),
                         new RangeFilter('id', [RangeFilter::LT => $cursor['id']]),
