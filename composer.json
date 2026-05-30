@@ -1,0 +1,21 @@
+{
+    "name": "scotty42/order-integration",
+    "description": "Order Integration API Plugin for Shopware 6",
+    "type": "shopware-platform-plugin",
+    "license": "proprietary",
+    "require": {
+        "shopware/core": "~6.7.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Scotty42\\OrderIntegration\\": "src/Plugin/OrderIntegration/"
+        }
+    },
+    "extra": {
+        "shopware-plugin-class": "Scotty42\\OrderIntegration\\OrderIntegrationPlugin",
+        "label": {
+            "de-DE": "Order Integration API",
+            "en-GB": "Order Integration API"
+        }
+    }
+}
