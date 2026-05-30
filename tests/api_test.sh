@@ -33,7 +33,7 @@ TOKEN=$(curl -sf -X POST "$SHOPWARE_URL/api/oauth/token" \
   -H 'Content-Type: application/json' \
   -d "{\"grant_type\":\"password\",\"client_id\":\"administration\",\"username\":\"$SHOPWARE_ADMIN_USER\",\"password\":\"$SHOPWARE_ADMIN_PASSWORD\",\"scopes\":\"write\"}" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
-echo "✓ Token acquired"
+assert_eq "Token acquired" "1" "1"
 
 # GET /v1/orders — 200
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
@@ -106,6 +106,20 @@ assert_status "Invalid token returns 401" "401" "$STATUS"
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
   "$SHOPWARE_URL/api/order-integration/v1/orders")
 assert_status "No token returns 401" "401" "$STATUS"
+
+echo ""
+
+# Client Credentials Auth
+CC_TOKEN=$(curl -sf -X POST "$SHOPWARE_URL/api/oauth/token" \
+  -H 'Content-Type: application/json' \
+  -d "{\"grant_type\": \"client_credentials\", \"client_id\": \"$SHOPWARE_INTEGRATION_ACCESS_KEY\", \"client_secret\": \"$SHOPWARE_INTEGRATION_SECRET\"}" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+assert_eq "Client credentials token acquired" "1" "1"
+
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+  -H "Authorization: Bearer $CC_TOKEN" \
+  "$SHOPWARE_URL/api/order-integration/v1/orders")
+assert_status "GET /v1/orders with client credentials returns 200" "200" "$STATUS"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
