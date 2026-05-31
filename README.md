@@ -18,7 +18,8 @@ Neither is the right production traffic plane for a D2C integration with an ERP 
 - The **Admin API** runs on the same PHP-FPM pool as the storefront, goes through the full Shopware DAL stack (validation, indexing, event firing, serializer) on every call, and will saturate the shop under order-volume read traffic.
 - The **Store API** is designed for human-paced storefront traffic and is not appropriate for service-to-service integration load.
 
-The solution is a **Shopware plugin** that registers its own API routes and calls Shopware's internal PHP services (`EntityRepository`, `CartService`, `StateMachineRegistry`, `OrderConverter`) directly — in-process, no HTTP overhead, same DB transaction where needed. This is orders of magnitude faster than calling the Admin API from outside and avoids competing with storefront traffic.
+The solution is a **Shopware plugin** that registers its own API routes and calls Shopware's internal PHP services (`EntityRepository`, `CartService`, `StateMachineRegistry`, `OrderConverter`) directly — in-process, no HTTP overhead, same DB transaction where needed. 
+**This is orders of magnitude faster than calling the Admin API from outside and avoids competing with storefront traffic.**
 
 ---
 
