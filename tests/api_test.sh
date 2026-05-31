@@ -109,6 +109,23 @@ assert_status "No token returns 401" "401" "$STATUS"
 
 echo ""
 
+# Validation tests
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+  -H "Authorization: Bearer $TOKEN" \
+  "$SHOPWARE_URL/api/order-integration/v1/orders?status=invalid")
+assert_status "Invalid status returns 422" "422" "$STATUS"
+
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+  -H "Authorization: Bearer $TOKEN" \
+  "$SHOPWARE_URL/api/order-integration/v1/orders?limit=999")
+assert_status "limit=999 returns 422" "422" "$STATUS"
+
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+  -H "Authorization: Bearer $TOKEN" \
+  "$SHOPWARE_URL/api/order-integration/v1/orders?createdAfter=not-a-date")
+assert_status "Invalid createdAfter returns 422" "422" "$STATUS"
+
+
 # Client Credentials Auth
 CC_TOKEN=$(curl -sf -X POST "$SHOPWARE_URL/api/oauth/token" \
   -H 'Content-Type: application/json' \

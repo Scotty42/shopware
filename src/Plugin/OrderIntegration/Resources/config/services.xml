@@ -5,11 +5,14 @@
     <services>
         <service id="Scotty42\OrderIntegration\Controller\OrderController" public="true">
             <argument type="service" id="order.repository"/>
+            <argument type="service" id="Scotty42\OrderIntegration\Validator\QueryValidator"/>
             <tag name="controller.service_arguments"/>
             <call method="setContainer">
                 <argument type="service" id="service_container"/>
             </call>
         </service>
+
+        <service id="Scotty42\OrderIntegration\Validator\QueryValidator"/>
 
         <service id="Scotty42\OrderIntegration\EventSubscriber\ExceptionSubscriber">
             <tag name="kernel.event_subscriber"/>

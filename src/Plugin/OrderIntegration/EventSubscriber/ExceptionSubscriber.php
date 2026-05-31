@@ -3,6 +3,7 @@
 namespace Scotty42\OrderIntegration\EventSubscriber;
 
 use Scotty42\OrderIntegration\Exception\OrderNotFoundException;
+use Scotty42\OrderIntegration\Exception\ValidationException;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Response;
@@ -28,19 +29,28 @@ class ExceptionSubscriber implements EventSubscriberInterface
 
         $exception = $event->getThrowable();
 
-        // Only handle our own exceptions — let Shopware handle auth errors
-        if (!$exception instanceof OrderNotFoundException) {
+        if (!$exception instanceof OrderNotFoundException && !$exception instanceof ValidationException) {
             return;
         }
 
         $status = $exception->getStatusCode();
 
-        $event->setResponse(new JsonResponse([
+        $body = [
             'type'   => 'about:blank',
             'title'  => Response::$statusTexts[$status] ?? 'Error',
             'status' => $status,
             'detail' => $exception->getMessage(),
             'code'   => $exception->getErrorCode(),
-        ], $status, ['Content-Type' => 'application/problem+json']));
+        ];
+
+        if ($exception instanceof ValidationException) {
+            $body['errors'] = $exception->getValidationErrors();
+        }
+
+        $event->setResponse(new JsonResponse(
+            $body,
+            $status,
+            ['Content-Type' => 'application/problem+json']
+        ));
     }
 }

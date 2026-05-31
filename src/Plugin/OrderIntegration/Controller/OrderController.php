@@ -3,6 +3,7 @@
 namespace Scotty42\OrderIntegration\Controller;
 
 use Scotty42\OrderIntegration\Exception\OrderNotFoundException;
+use Scotty42\OrderIntegration\Validator\QueryValidator;
 use Shopware\Core\Framework\Context;
 use Shopware\Core\Framework\DataAbstractionLayer\EntityRepository;
 use Shopware\Core\Framework\DataAbstractionLayer\Search\Criteria;
@@ -30,6 +31,7 @@ class OrderController extends AbstractController
 
     public function __construct(
         private readonly EntityRepository $orderRepository,
+        private readonly QueryValidator $queryValidator,
     ) {}
 
     #[Route(
@@ -39,6 +41,8 @@ class OrderController extends AbstractController
     )]
     public function list(Request $request, Context $context): JsonResponse
     {
+        $this->queryValidator->validateListParams($request->query->all());
+
         $limit = min($request->query->getInt('limit', 50), 200);
 
         $criteria = new Criteria();
@@ -62,18 +66,16 @@ class OrderController extends AbstractController
 
         if ($cursorRaw = $request->query->get('cursor')) {
             $cursor = json_decode(base64_decode($cursorRaw), true);
-            if (!empty($cursor['createdAt']) && !empty($cursor['id'])) {
-                $criteria->addFilter(new MultiFilter(MultiFilter::CONNECTION_OR, [
-                    new RangeFilter('createdAt', [RangeFilter::LT => $cursor['createdAt']]),
-                    new MultiFilter(MultiFilter::CONNECTION_AND, [
-                        new EqualsFilter('createdAt', $cursor['createdAt']),
-                        new NotFilter(MultiFilter::CONNECTION_AND, [
-                            new EqualsFilter('id', $cursor['id']),
-                        ]),
-                        new RangeFilter('id', [RangeFilter::LT => $cursor['id']]),
+            $criteria->addFilter(new MultiFilter(MultiFilter::CONNECTION_OR, [
+                new RangeFilter('createdAt', [RangeFilter::LT => $cursor['createdAt']]),
+                new MultiFilter(MultiFilter::CONNECTION_AND, [
+                    new EqualsFilter('createdAt', $cursor['createdAt']),
+                    new NotFilter(MultiFilter::CONNECTION_AND, [
+                        new EqualsFilter('id', $cursor['id']),
                     ]),
-                ]));
-            }
+                    new RangeFilter('id', [RangeFilter::LT => $cursor['id']]),
+                ]),
+            ]));
         }
 
         $orders = $this->orderRepository->search($criteria, $context);
