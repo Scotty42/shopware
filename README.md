@@ -114,6 +114,9 @@ A single `status` field is exposed to callers, mapped from Shopware's `stateMach
 
 ## Implemented endpoints (Phase 1)
 
+![Shopware Admin — Order status transitions applied via API](docs/assets/shopware-admin-orders.png)
+
+
 ### `GET /api/order-integration/v1/orders`
 
 Lists orders with associations: `lineItems`, `deliveries`, `transactions`, `addresses`, `stateMachineState`, `currency`.
@@ -210,7 +213,7 @@ cd /var/www/shopware
 | Phase | Description |
 |---|---|
 | **1 (current)** | Plugin skeleton, `GET /v1/orders` + `GET /v1/orders/{id}`, cursor pagination, filters, RFC 9457 errors, OAuth2 password grant + client credentials, 16-test suite, QueryValidator |
-| **2** | `POST /v1/orders` via `CartService` + `OrderConverter` (Path 2 from spike), `PUT /v1/orders/{id}/status` state machine transitions |
+| **2 (current)** | `PUT /v1/orders/{id}/status`, `PUT /v1/orders/{id}/payment-status`, `PUT /v1/orders/{id}/delivery-status` — all three Shopware state machines, InvalidTransitionException (409), 20-test suite |
 | **3** | `PATCH /v1/orders/{id}`, `DELETE /v1/orders/{id}` (soft cancel), delivery sub-resource |
 | **4** | Read projection fed by Shopware business events — decouple read traffic from Shopware DB |
 | **5** | Dedicated auth (API key / mTLS), rate limiting, idempotency store, RFC 9457 error model |

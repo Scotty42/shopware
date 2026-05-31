@@ -12,6 +12,19 @@
             </call>
         </service>
 
+        <service id="Scotty42\OrderIntegration\Controller\StatusController" public="true">
+            <argument type="service" id="order.repository"/>
+            <argument type="service" id="Scotty42\OrderIntegration\Service\StateMachineService"/>
+            <tag name="controller.service_arguments"/>
+            <call method="setContainer">
+                <argument type="service" id="service_container"/>
+            </call>
+        </service>
+
+        <service id="Scotty42\OrderIntegration\Service\StateMachineService">
+            <argument type="service" id="Shopware\Core\System\StateMachine\StateMachineRegistry"/>
+        </service>
+
         <service id="Scotty42\OrderIntegration\Validator\QueryValidator"/>
 
         <service id="Scotty42\OrderIntegration\EventSubscriber\ExceptionSubscriber">

@@ -138,6 +138,35 @@ STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
   "$SHOPWARE_URL/api/order-integration/v1/orders")
 assert_status "GET /v1/orders with client credentials returns 200" "200" "$STATUS"
 
+# Status transitions
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"status": "in_progress"}' \
+  "$SHOPWARE_URL/api/order-integration/v1/orders/019e79e17f17714883792eb3b8573ab6/status")
+assert_status "PUT /v1/orders/{id}/status returns 200" "200" "$STATUS"
+
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"status": "paid"}' \
+  "$SHOPWARE_URL/api/order-integration/v1/orders/019e79e17f17714883792eb3b8573ab6/payment-status")
+assert_status "PUT /v1/orders/{id}/payment-status returns 200" "200" "$STATUS"
+
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"status": "shipped"}' \
+  "$SHOPWARE_URL/api/order-integration/v1/orders/019e79e17f17714883792eb3b8573ab6/delivery-status")
+assert_status "PUT /v1/orders/{id}/delivery-status returns 200" "200" "$STATUS"
+
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"status": "invalid"}' \
+  "$SHOPWARE_URL/api/order-integration/v1/orders/019e79e17f17714883792eb3b8573ab6/status")
+assert_status "PUT /v1/orders/{id}/status invalid transition returns 409" "409" "$STATUS"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1

@@ -3,6 +3,7 @@
 namespace Scotty42\OrderIntegration\EventSubscriber;
 
 use Scotty42\OrderIntegration\Exception\OrderNotFoundException;
+use Scotty42\OrderIntegration\Exception\InvalidTransitionException;
 use Scotty42\OrderIntegration\Exception\ValidationException;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -29,7 +30,7 @@ class ExceptionSubscriber implements EventSubscriberInterface
 
         $exception = $event->getThrowable();
 
-        if (!$exception instanceof OrderNotFoundException && !$exception instanceof ValidationException) {
+        if (!$exception instanceof OrderNotFoundException && !$exception instanceof ValidationException && !$exception instanceof InvalidTransitionException) {
             return;
         }
 
