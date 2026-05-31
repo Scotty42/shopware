@@ -115,7 +115,7 @@ A single `status` field is exposed to callers, mapped from Shopware's `stateMach
 
 ## Implemented endpoints (Phase 1)
 
-![Shopware Admin — Order status transitions applied via API](docs/assets/shopware-admin-orders.png)
+![Shopware Admin — Order status transitions applied via API](docs/assets/Order_State.png)
 
 
 ### `GET /api/order-integration/v1/orders`
