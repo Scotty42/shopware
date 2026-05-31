@@ -116,37 +116,31 @@ A single `status` field is exposed to callers, mapped from Shopware's `stateMach
 
 ### `GET /api/order-integration/v1/orders`
 
-Lists orders with key fields. Loads associations: `lineItems`, `deliveries`, `transactions`, `addresses`, `stateMachineState`, `currency`.
-
-**Response:**
-```json
-{
-  "items": [
-    {
-      "id": "019e79d3be9272308522b3aea51a4adc",
-      "orderNumber": "10000",
-      "status": "open",
-      "total": {
-        "amount": 800,
-        "currency": "EUR"
-      },
-      "createdAt": "2026-05-30T16:59:40+00:00",
-      "updatedAt": null
-    }
-  ],
-  "page": {
-    "total": 1,
-    "limit": 50
-  }
-}
-```
-
-![Orders Overview](docs/assets/Admin_UI_Orders.png)
+Lists orders with associations: `lineItems`, `deliveries`, `transactions`, `addresses`, `stateMachineState`, `currency`.
 
 **Query parameters:**
-- `limit` (int, default 50, max 200)
+
+| Parameter | Type | Default | Validation |
+|---|---|---|---|
+| `limit` | int | 50 | 1–200 |
+| `status` | string | — | `open`, `in_progress`, `completed`, `cancelled` |
+| `customerId` | string | — | 32-char hex |
+| `createdAfter` | ISO 8601 | — | valid date-time |
+| `createdBefore` | ISO 8601 | — | valid date-time |
+| `cursor` | string | — | base64-encoded pagination cursor |
+
+Invalid parameters return `422 Unprocessable Content` with RFC 9457 `errors[]` array.
+
+**Cursor pagination:** pass `?limit=N` to get a page; if `nextCursor` is non-null, pass `?cursor=<value>` to fetch the next page.
 
 ---
+
+### `GET /api/order-integration/v1/orders/{orderId}`
+
+Returns a single order by Shopware hex ID.
+
+- `200 OK` — order found
+- `404 Not Found` — RFC 9457 body with `code: order.not_found`
 
 ## Infrastructure requirements
 
@@ -215,7 +209,7 @@ cd /var/www/shopware
 
 | Phase | Description |
 |---|---|
-| **1 (current)** | Plugin skeleton, `GET /v1/orders` + `GET /v1/orders/{id}`, cursor pagination, filters, RFC 9457 errors, OAuth2 password grant + client credentials, 13-test suite |
+| **1 (current)** | Plugin skeleton, `GET /v1/orders` + `GET /v1/orders/{id}`, cursor pagination, filters, RFC 9457 errors, OAuth2 password grant + client credentials, 16-test suite, QueryValidator |
 | **2** | `POST /v1/orders` via `CartService` + `OrderConverter` (Path 2 from spike), `PUT /v1/orders/{id}/status` state machine transitions |
 | **3** | `PATCH /v1/orders/{id}`, `DELETE /v1/orders/{id}` (soft cancel), delivery sub-resource |
 | **4** | Read projection fed by Shopware business events — decouple read traffic from Shopware DB |
