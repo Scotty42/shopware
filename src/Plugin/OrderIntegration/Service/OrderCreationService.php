@@ -3,13 +3,10 @@
 namespace Scotty42\OrderIntegration\Service;
 
 use Shopware\Core\Checkout\Cart\LineItem\LineItem;
-use Shopware\Core\Checkout\Cart\Order\OrderConversionContext;
 use Shopware\Core\Checkout\Cart\Order\OrderConverter;
 use Shopware\Core\Checkout\Cart\Order\OrderPersister;
 use Shopware\Core\Checkout\Cart\SalesChannel\CartService;
 use Shopware\Core\Framework\Context;
-use Shopware\Core\Framework\DataAbstractionLayer\EntityRepository;
-use Shopware\Core\Framework\DataAbstractionLayer\Search\Criteria;
 use Shopware\Core\Framework\Uuid\Uuid;
 use Shopware\Core\System\SalesChannel\Context\AbstractSalesChannelContextFactory;
 use Shopware\Core\System\SalesChannel\Context\SalesChannelContextService;
@@ -21,11 +18,15 @@ class OrderCreationService
         private readonly OrderConverter $orderConverter,
         private readonly OrderPersister $orderPersister,
         private readonly AbstractSalesChannelContextFactory $salesChannelContextFactory,
-        private readonly EntityRepository $customerRepository,
-        private readonly EntityRepository $orderRepository,
     ) {}
 
-    public function createOrder(array $data, Context $context): array
+    /**
+     * Builds a cart from the caller's domain payload and persists it as a
+     * Shopware order via the standard checkout pipeline. Returns the new
+     * order id; mapping to the spec-compliant response shape is done in
+     * the controller via OrderMapper.
+     */
+    public function createOrder(array $data, Context $context): string
     {
         $salesChannelId = $data['salesChannelId'];
         $token = Uuid::randomHex();
@@ -42,7 +43,6 @@ class OrderCreationService
             $contextOptions
         );
 
-        // Create and populate cart
         $cart = $this->cartService->createNew($token);
 
         foreach ($data['lineItems'] as $item) {
@@ -63,24 +63,6 @@ class OrderCreationService
             $cart->setCustomerComment($data['customerComment']);
         }
 
-        // Convert and persist
-        $orderId = $this->orderPersister->persist($cart, $salesChannelContext);
-
-        // Fetch created order
-        $criteria = new Criteria([$orderId]);
-        $criteria->addAssociations(['stateMachineState', 'currency', 'lineItems']);
-
-        $order = $this->orderRepository->search($criteria, $context)->first();
-
-        return [
-            'id'          => $order->getId(),
-            'orderNumber' => $order->getOrderNumber(),
-            'status'      => $order->getStateMachineState()?->getTechnicalName(),
-            'total'       => [
-                'amount'   => $order->getAmountTotal(),
-                'currency' => $order->getCurrency()?->getIsoCode(),
-            ],
-            'createdAt'   => $order->getCreatedAt()?->format(\DateTimeInterface::ATOM),
-        ];
+        return $this->orderPersister->persist($cart, $salesChannelContext);
     }
 }

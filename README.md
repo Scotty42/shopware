@@ -143,8 +143,19 @@ Invalid parameters return `422 Unprocessable Content` with RFC 9457 `errors[]` a
 
 Returns a single order by Shopware hex ID.
 
-- `200 OK` — order found
+- `200 OK` — order found, body matches OpenAPI `#/components/schemas/Order`, response carries an `ETag` header (weak, derived from `versionId` + `updatedAt`).
 - `404 Not Found` — RFC 9457 body with `code: order.not_found`
+
+### Response shape
+
+Every order response (list, single GET, POST create, the three status PUTs) returns the spec-compliant `Order` payload as defined in `docs/order-api-openapi.yaml`. Mapping lives in `Service/OrderMapper.php` and is the single source of truth for the response shape. Key fields:
+
+- `paymentStatus` — last transaction's `stateMachineState.technicalName` (Shopware enum, e.g. `paid`, `refunded_partially`, `authorized`).
+- `deliveryStatus` — last delivery's `stateMachineState.technicalName` (Phase 1 single-delivery semantics; the multi-delivery sub-resource lands in Phase 3).
+- `customer`, `billingAddress`, `shippingAddress`, `lineItems`, `deliveries[]` — embedded objects, no second round trip needed for the common read.
+- `version` — Shopware `versionId`, used to compute the response's weak `ETag`.
+
+`POST /v1/orders` additionally returns a `Location: /api/order-integration/v1/orders/{id}` header on `201 Created`. The status PUTs return the full updated `Order`, not a `{orderId, status}` envelope.
 
 ## Infrastructure requirements
 
@@ -217,7 +228,7 @@ cd /var/www/shopware
 | **2 (done)** | `PUT /v1/orders/{id}/status`, `PUT /v1/orders/{id}/payment-status`, `PUT /v1/orders/{id}/delivery-status`, `POST /v1/orders` (CartService + OrderPersister), 23/23 tests |
 | **3 (current)** | `PATCH /v1/orders/{id}`, `DELETE /v1/orders/{id}` (soft cancel), Delivery sub-resource |
 | **4** | Read projection fed by Shopware business events — decouple read traffic from Shopware DB |
-| **5** | Dedicated auth (API key / mTLS), rate limiting, idempotency store, RFC 9457 error model |
+| **5** | Dedicated auth (API key / mTLS), rate limiting, idempotency store |
 
 ---
 

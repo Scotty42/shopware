@@ -2,9 +2,10 @@
 
 namespace Scotty42\OrderIntegration\Controller;
 
-use Scotty42\OrderIntegration\Exception\InvalidTransitionException;
 use Scotty42\OrderIntegration\Exception\OrderNotFoundException;
+use Scotty42\OrderIntegration\Service\OrderMapper;
 use Scotty42\OrderIntegration\Service\StateMachineService;
+use Shopware\Core\Checkout\Order\OrderEntity;
 use Shopware\Core\Framework\Context;
 use Shopware\Core\Framework\DataAbstractionLayer\EntityRepository;
 use Shopware\Core\Framework\DataAbstractionLayer\Search\Criteria;
@@ -17,9 +18,26 @@ use Symfony\Component\Routing\Attribute\Route;
 #[Route(defaults: ['_routeScope' => ['api']])]
 class StatusController extends AbstractController
 {
+    /**
+     * Same association set as OrderController — needed to render the full
+     * Order shape in the transition responses.
+     */
+    private const ASSOCIATIONS = [
+        'lineItems',
+        'deliveries.stateMachineState',
+        'deliveries.shippingOrderAddress.country',
+        'transactions.stateMachineState',
+        'addresses.country',
+        'stateMachineState',
+        'currency',
+        'orderCustomer',
+        'tags',
+    ];
+
     public function __construct(
         private readonly EntityRepository $orderRepository,
         private readonly StateMachineService $stateMachineService,
+        private readonly OrderMapper $orderMapper,
     ) {}
 
     #[Route(
@@ -34,7 +52,7 @@ class StatusController extends AbstractController
 
         $this->stateMachineService->transitionOrder($orderId, $targetStatus, $context);
 
-        return new JsonResponse(['orderId' => $orderId, 'status' => $targetStatus], Response::HTTP_OK);
+        return $this->respondWithOrder($orderId, $context);
     }
 
     #[Route(
@@ -44,18 +62,11 @@ class StatusController extends AbstractController
     )]
     public function setPaymentStatus(string $orderId, Request $request, Context $context): JsonResponse
     {
-        $this->assertOrderExists($orderId, $context);
-        $order = $this->getOrder($orderId, $context);
+        $order = $this->loadOrderOrFail($orderId, $context);
 
         $transactions = $order->getTransactions();
         if ($transactions === null || $transactions->count() === 0) {
-            return new JsonResponse([
-                'type'   => 'about:blank',
-                'title'  => 'Conflict',
-                'status' => 409,
-                'detail' => 'Order has no transactions.',
-                'code'   => 'order.no_transactions',
-            ], Response::HTTP_CONFLICT);
+            return $this->conflict('Order has no transactions.', 'order.no_transactions');
         }
 
         $transactionId = $transactions->last()->getId();
@@ -63,7 +74,7 @@ class StatusController extends AbstractController
 
         $this->stateMachineService->transitionPayment($transactionId, $targetStatus, $context);
 
-        return new JsonResponse(['orderId' => $orderId, 'paymentStatus' => $targetStatus], Response::HTTP_OK);
+        return $this->respondWithOrder($orderId, $context);
     }
 
     #[Route(
@@ -73,18 +84,11 @@ class StatusController extends AbstractController
     )]
     public function setDeliveryStatus(string $orderId, Request $request, Context $context): JsonResponse
     {
-        $this->assertOrderExists($orderId, $context);
-        $order = $this->getOrder($orderId, $context);
+        $order = $this->loadOrderOrFail($orderId, $context);
 
         $deliveries = $order->getDeliveries();
         if ($deliveries === null || $deliveries->count() === 0) {
-            return new JsonResponse([
-                'type'   => 'about:blank',
-                'title'  => 'Conflict',
-                'status' => 409,
-                'detail' => 'Order has no deliveries.',
-                'code'   => 'order.no_deliveries',
-            ], Response::HTTP_CONFLICT);
+            return $this->conflict('Order has no deliveries.', 'order.no_deliveries');
         }
 
         $deliveryId = $deliveries->last()->getId();
@@ -92,7 +96,7 @@ class StatusController extends AbstractController
 
         $this->stateMachineService->transitionDelivery($deliveryId, $targetStatus, $context);
 
-        return new JsonResponse(['orderId' => $orderId, 'deliveryStatus' => $targetStatus], Response::HTTP_OK);
+        return $this->respondWithOrder($orderId, $context);
     }
 
     private function assertOrderExists(string $orderId, Context $context): void
@@ -105,12 +109,56 @@ class StatusController extends AbstractController
         }
     }
 
-    private function getOrder(string $orderId, Context $context)
+    private function loadOrderOrFail(string $orderId, Context $context): OrderEntity
     {
         $criteria = new Criteria([$orderId]);
         $criteria->addAssociations(['transactions', 'deliveries']);
 
-        return $this->orderRepository->search($criteria, $context)->first();
+        $order = $this->orderRepository->search($criteria, $context)->first();
+
+        if (!$order instanceof OrderEntity) {
+            throw new OrderNotFoundException($orderId);
+        }
+
+        return $order;
+    }
+
+    /**
+     * Re-loads the order with the full association set and returns the
+     * spec-compliant Order payload plus ETag. Used after every successful
+     * state-machine transition.
+     */
+    private function respondWithOrder(string $orderId, Context $context): JsonResponse
+    {
+        $criteria = new Criteria([$orderId]);
+        $criteria->addAssociations(self::ASSOCIATIONS);
+
+        $order = $this->orderRepository->search($criteria, $context)->first();
+
+        if (!$order instanceof OrderEntity) {
+            throw new OrderNotFoundException($orderId);
+        }
+
+        return new JsonResponse(
+            $this->orderMapper->mapOrder($order),
+            Response::HTTP_OK,
+            ['ETag' => $this->orderMapper->etagFor($order)]
+        );
+    }
+
+    private function conflict(string $detail, string $code): JsonResponse
+    {
+        return new JsonResponse(
+            [
+                'type'   => 'about:blank',
+                'title'  => 'Conflict',
+                'status' => Response::HTTP_CONFLICT,
+                'detail' => $detail,
+                'code'   => $code,
+            ],
+            Response::HTTP_CONFLICT,
+            ['Content-Type' => 'application/problem+json']
+        );
     }
 
     private function getRequiredField(Request $request, string $field): string
