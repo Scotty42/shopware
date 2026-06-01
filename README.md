@@ -214,8 +214,8 @@ cd /var/www/shopware
 | Phase | Description |
 |---|---|
 | **1 (current)** | Plugin skeleton, `GET /v1/orders` + `GET /v1/orders/{id}`, cursor pagination, filters, RFC 9457 errors, OAuth2 password grant + client credentials, 16-test suite, QueryValidator |
-| **2 (current)** | `PUT /v1/orders/{id}/status`, `PUT /v1/orders/{id}/payment-status`, `PUT /v1/orders/{id}/delivery-status` — all three Shopware state machines, InvalidTransitionException (409), 20-test suite |
-| **3** | `PATCH /v1/orders/{id}`, `DELETE /v1/orders/{id}` (soft cancel), delivery sub-resource |
+| **2 (done)** | `PUT /v1/orders/{id}/status`, `PUT /v1/orders/{id}/payment-status`, `PUT /v1/orders/{id}/delivery-status`, `POST /v1/orders` (CartService + OrderPersister), 23/23 tests |
+| **3 (current)** | `PATCH /v1/orders/{id}`, `DELETE /v1/orders/{id}` (soft cancel), Delivery sub-resource |
 | **4** | Read projection fed by Shopware business events — decouple read traffic from Shopware DB |
 | **5** | Dedicated auth (API key / mTLS), rate limiting, idempotency store, RFC 9457 error model |
 
