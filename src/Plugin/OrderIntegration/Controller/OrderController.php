@@ -3,6 +3,7 @@
 namespace Scotty42\OrderIntegration\Controller;
 
 use Scotty42\OrderIntegration\Exception\OrderNotFoundException;
+use Scotty42\OrderIntegration\Service\OrderCreationService;
 use Scotty42\OrderIntegration\Validator\QueryValidator;
 use Shopware\Core\Framework\Context;
 use Shopware\Core\Framework\DataAbstractionLayer\EntityRepository;
@@ -15,6 +16,7 @@ use Shopware\Core\Framework\DataAbstractionLayer\Search\Sorting\FieldSorting;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Routing\Attribute\Route;
 
 #[Route(defaults: ['_routeScope' => ['api']])]
@@ -32,6 +34,7 @@ class OrderController extends AbstractController
     public function __construct(
         private readonly EntityRepository $orderRepository,
         private readonly QueryValidator $queryValidator,
+        private readonly OrderCreationService $orderCreationService,
     ) {}
 
     #[Route(
@@ -104,6 +107,46 @@ class OrderController extends AbstractController
                 'nextCursor' => $nextCursor,
             ],
         ]);
+    }
+
+    #[Route(
+        path: '/api/order-integration/v1/orders',
+        name: 'api.order-integration.orders.create',
+        methods: ['POST']
+    )]
+    public function create(Request $request, Context $context): JsonResponse
+    {
+        $data = json_decode($request->getContent(), true);
+
+        if (empty($data['salesChannelId'])) {
+            return new JsonResponse([
+                'type'   => 'about:blank',
+                'title'  => 'Unprocessable Content',
+                'status' => 422,
+                'detail' => 'Validation failed.',
+                'code'   => 'order.validation_failed',
+                'errors' => [
+                    ['pointer' => '/salesChannelId', 'code' => 'required', 'message' => 'salesChannelId is required'],
+                ],
+            ], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        if (empty($data['lineItems'])) {
+            return new JsonResponse([
+                'type'   => 'about:blank',
+                'title'  => 'Unprocessable Content',
+                'status' => 422,
+                'detail' => 'Validation failed.',
+                'code'   => 'order.validation_failed',
+                'errors' => [
+                    ['pointer' => '/lineItems', 'code' => 'required', 'message' => 'lineItems must not be empty'],
+                ],
+            ], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        $order = $this->orderCreationService->createOrder($data, $context);
+
+        return new JsonResponse($order, Response::HTTP_CREATED);
     }
 
     #[Route(

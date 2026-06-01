@@ -1,0 +1,86 @@
+<?php declare(strict_types=1);
+
+namespace Scotty42\OrderIntegration\Service;
+
+use Shopware\Core\Checkout\Cart\LineItem\LineItem;
+use Shopware\Core\Checkout\Cart\Order\OrderConversionContext;
+use Shopware\Core\Checkout\Cart\Order\OrderConverter;
+use Shopware\Core\Checkout\Cart\Order\OrderPersister;
+use Shopware\Core\Checkout\Cart\SalesChannel\CartService;
+use Shopware\Core\Framework\Context;
+use Shopware\Core\Framework\DataAbstractionLayer\EntityRepository;
+use Shopware\Core\Framework\DataAbstractionLayer\Search\Criteria;
+use Shopware\Core\Framework\Uuid\Uuid;
+use Shopware\Core\System\SalesChannel\Context\AbstractSalesChannelContextFactory;
+use Shopware\Core\System\SalesChannel\Context\SalesChannelContextService;
+
+class OrderCreationService
+{
+    public function __construct(
+        private readonly CartService $cartService,
+        private readonly OrderConverter $orderConverter,
+        private readonly OrderPersister $orderPersister,
+        private readonly AbstractSalesChannelContextFactory $salesChannelContextFactory,
+        private readonly EntityRepository $customerRepository,
+        private readonly EntityRepository $orderRepository,
+    ) {}
+
+    public function createOrder(array $data, Context $context): array
+    {
+        $salesChannelId = $data['salesChannelId'];
+        $token = Uuid::randomHex();
+
+        $contextOptions = array_filter([
+            SalesChannelContextService::CUSTOMER_ID        => $data['customer']['id'] ?? null,
+            SalesChannelContextService::PAYMENT_METHOD_ID  => $data['paymentMethodId'] ?? null,
+            SalesChannelContextService::SHIPPING_METHOD_ID => $data['shippingMethodId'] ?? null,
+        ]);
+
+        $salesChannelContext = $this->salesChannelContextFactory->create(
+            $token,
+            $salesChannelId,
+            $contextOptions
+        );
+
+        // Create and populate cart
+        $cart = $this->cartService->createNew($token);
+
+        foreach ($data['lineItems'] as $item) {
+            $lineItem = new LineItem(
+                Uuid::randomHex(),
+                LineItem::PRODUCT_LINE_ITEM_TYPE,
+                $item['productId'],
+                $item['quantity'] ?? 1,
+            );
+            $lineItem->setRemovable(true);
+            $lineItem->setStackable(true);
+            $cart->add($lineItem);
+        }
+
+        $cart = $this->cartService->recalculate($cart, $salesChannelContext);
+
+        if (!empty($data['customerComment'])) {
+            $cart->setCustomerComment($data['customerComment']);
+        }
+
+        // Convert and persist
+        $orderId = $this->orderPersister->persist($cart, $salesChannelContext);
+
+        // Fetch created order
+        $criteria = new Criteria([$orderId]);
+        $criteria->addAssociations(['stateMachineState', 'currency', 'lineItems']);
+
+        $order = $this->orderRepository->search($criteria, $context)->first();
+
+        return [
+            'id'          => $order->getId(),
+            'orderNumber' => $order->getOrderNumber(),
+            'status'      => $order->getStateMachineState()?->getTechnicalName(),
+            'total'       => [
+                'amount'   => $order->getAmountTotal(),
+                'currency' => $order->getCurrency()?->getIsoCode(),
+            ],
+            'createdAt'   => $order->getCreatedAt()?->format(\DateTimeInterface::ATOM),
+        ];
+    }
+}
