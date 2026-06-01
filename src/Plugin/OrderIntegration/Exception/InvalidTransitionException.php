@@ -11,6 +11,7 @@ class InvalidTransitionException extends HttpException
         string $machine,
         string $targetStatus,
         array $validStatuses,
+        ?\Throwable $previous = null,
     ) {
         parent::__construct(
             Response::HTTP_CONFLICT,
@@ -20,6 +21,7 @@ class InvalidTransitionException extends HttpException
                 $targetStatus,
                 implode(', ', $validStatuses)
             ),
+            $previous,
         );
     }
 

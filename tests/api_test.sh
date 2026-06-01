@@ -165,7 +165,31 @@ STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
   -H "Content-Type: application/json" \
   -d '{"status": "invalid"}' \
   "$SHOPWARE_URL/api/order-integration/v1/orders/019e79e17f17714883792eb3b8573ab6/status")
-assert_status "PUT /v1/orders/{id}/status invalid transition returns 409" "409" "$STATUS"
+assert_status "PUT /v1/orders/{id}/status invalid name returns 409" "409" "$STATUS"
+
+# Bug-#7 regression: a valid status name from an incompatible source state
+# must also return 409 (not 500). Pick a target that the order cannot reach
+# from its current state — `cancelled` after a successful `complete` would
+# fail; we test the reverse here by trying to re-complete an order that has
+# just been cancelled (if reachable from this fixture, ExceptionSubscriber
+# must translate Shopware's IllegalTransitionException to 409).
+RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X PUT \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"status": "completed"}' \
+  "$SHOPWARE_URL/api/order-integration/v1/orders/019e79e17f17714883792eb3b8573ab6/status")
+HTTP_STATUS=$(echo "$RESPONSE" | grep '^HTTP_STATUS:' | cut -d: -f2)
+BODY=$(echo "$RESPONSE" | sed '/^HTTP_STATUS:/d')
+if [[ "$HTTP_STATUS" == "409" ]] || [[ "$HTTP_STATUS" == "200" ]]; then
+  echo "✓ PUT /v1/orders/{id}/status illegal transition returns 409 (or 200 if reachable; got $HTTP_STATUS)"
+  ((PASS++)) || true
+elif [[ "$HTTP_STATUS" == "500" ]]; then
+  echo "✗ PUT /v1/orders/{id}/status illegal transition returned 500 — IllegalTransitionException not mapped (bug #7)"
+  ((FAIL++)) || true
+else
+  echo "✗ PUT /v1/orders/{id}/status illegal transition returned unexpected $HTTP_STATUS"
+  ((FAIL++)) || true
+fi
 
 echo ""
 
