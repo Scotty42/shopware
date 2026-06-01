@@ -168,5 +168,46 @@ STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
 assert_status "PUT /v1/orders/{id}/status invalid transition returns 409" "409" "$STATUS"
 
 echo ""
+
+# POST /v1/orders — create order
+CUSTOMER_ID=$(curl -s "$SHOPWARE_URL/api/customer?limit=1" \
+  -H "Authorization: Bearer $TOKEN" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['data'][0]['id'])")
+
+NEW_ORDER=$(curl -s -X POST "$SHOPWARE_URL/api/order-integration/v1/orders" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"salesChannelId\": \"019e77e0f8b671b2b429714572d63709\",
+    \"customer\": {\"id\": \"$CUSTOMER_ID\"},
+    \"lineItems\": [{\"productId\": \"11dc680240b04f469ccba354cbf0b967\", \"quantity\": 1}]
+  }")
+
+NEW_ORDER_ID=$(echo "$NEW_ORDER" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
+if [[ -n "$NEW_ORDER_ID" ]]; then
+  echo "✓ POST /v1/orders created order $NEW_ORDER_ID"
+  ((PASS++)) || true
+else
+  echo "✗ POST /v1/orders failed"
+  ((FAIL++)) || true
+fi
+
+# POST /v1/orders — missing salesChannelId returns 422
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"lineItems": [{"productId": "11dc680240b04f469ccba354cbf0b967", "quantity": 1}]}' \
+  "$SHOPWARE_URL/api/order-integration/v1/orders")
+assert_status "POST /v1/orders missing salesChannelId returns 422" "422" "$STATUS"
+
+# POST /v1/orders — missing lineItems returns 422
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"salesChannelId": "019e77e0f8b671b2b429714572d63709"}' \
+  "$SHOPWARE_URL/api/order-integration/v1/orders")
+assert_status "POST /v1/orders missing lineItems returns 422" "422" "$STATUS"
+
+echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1
