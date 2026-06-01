@@ -109,7 +109,15 @@ Future phases will add mTLS at the gateway level and ACL role-based scope restri
 
 ### Domain status mapping
 
-A single `status` field is exposed to callers, mapped from Shopware's `stateMachineState.technicalName`. Shopware maintains three independent state machines per order (order state, payment state, delivery state). The plugin exposes all three but normalises the primary order state into the domain model.
+Shopware maintains three independent state machines per order. The plugin exposes all three with separate response fields and separate transition endpoints:
+
+| Response field | Source | Allowed values |
+|---|---|---|
+| `status` | `order.stateMachineState.technicalName` | `open`, `in_progress`, `completed`, `cancelled` — the four values coincide with Shopware's order technical names, so no translation table is needed. |
+| `paymentStatus` | last `order_transaction.stateMachineState.technicalName` | Shopware enum, e.g. `open`, `paid`, `paid_partially`, `authorized`, `refunded`, `refunded_partially`, `failed`, `cancelled`, `chargeback`, `reminded`. |
+| `deliveryStatus` | last `order_delivery.stateMachineState.technicalName` | Shopware enum, e.g. `open`, `shipped`, `shipped_partially`, `returned`, `returned_partially`, `cancelled`. |
+
+The `PUT /v1/orders/{id}/status` endpoint accepts only the four domain order-status values. The payment- and delivery-status PUTs accept the Shopware technical names directly (no translation). Internal mapping table lives in `Service/StateMachineService.php`.
 
 ---
 
@@ -201,6 +209,13 @@ Copy `.env.test.dist` to `.env.test` and fill in credentials. This file is gitig
 cp .env.test.dist .env.test
 ```
 
+| Variable | Used by | Purpose |
+|---|---|---|
+| `SHOPWARE_URL` | both test scripts | Base URL for the Shopware install under test. |
+| `SHOPWARE_ADMIN_USER` / `..._PASSWORD` | `api_test.sh` | Acquires a password-grant token. Dev/admin only. |
+| `SHOPWARE_INTEGRATION_ACCESS_KEY` / `..._SECRET` | `api_test.sh` | Acquires a client-credentials token. Production-class path. |
+| `SHOPWARE_STORE_ACCESS_KEY` | `create_test_order.sh` only | Sales-channel access key for Store API guest registration & cart build — needed to provision a real test order. Not used by the plugin itself. |
+
 ### Run tests
 
 ```bash
@@ -222,13 +237,16 @@ cd /var/www/shopware
 
 ## Roadmap
 
+> **Two roadmaps, two axes.** This table tracks **endpoint coverage**. The infra/load axis (sync plugin → read projection → write queue) is tracked in `docs/order-api-concept.md` §2, Option C. The two map roughly as: README Phase 4 ↔ concept Phase 2 (reads), README Phase 5 ↔ concept Phase 3 (writes) + dedicated auth.
+
 | Phase | Description |
 |---|---|
-| **1 (done)** | Plugin skeleton, `GET /v1/orders` + `GET /v1/orders/{id}`, cursor pagination, filters, RFC 9457 errors, OAuth2 password grant + client credentials, 16-test suite, QueryValidator |
+| **1 (done)** | Plugin skeleton, `GET /v1/orders` + `GET /v1/orders/{id}`, cursor pagination, filters, RFC 9457 errors, Shopware OAuth2 (password grant + client credentials), 16-test suite, QueryValidator |
 | **2 (done)** | `PUT /v1/orders/{id}/status`, `PUT /v1/orders/{id}/payment-status`, `PUT /v1/orders/{id}/delivery-status`, `POST /v1/orders` (CartService + OrderPersister), 23/23 tests |
-| **3 (current)** | `PATCH /v1/orders/{id}`, `DELETE /v1/orders/{id}` (soft cancel), Delivery sub-resource |
+| **3 (current)** | `PATCH /v1/orders/{id}`, `DELETE /v1/orders/{id}` (soft cancel), Delivery sub-resource (multi-shipment), spec-compliant response shape, `ETag` / `Location` headers |
 | **4** | Read projection fed by Shopware business events — decouple read traffic from Shopware DB |
-| **5** | Dedicated auth (API key / mTLS), rate limiting, idempotency store |
+| **4b** | **ERP integration (primary integration)** — outbound `order.created` webhook to ERP, inbound batched `POST /shipment-events` for FFP-driven shipment status & tracking (see `docs/order-api-concept.md` §7a) |
+| **5** | Dedicated auth (API key / mTLS), rate limiting, idempotency store, `If-Match` enforcement |
 
 ---
 

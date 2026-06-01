@@ -4,12 +4,34 @@ info:
   version: 1.0.0
   summary: Service-to-service REST API for managing the order lifecycle on top of Shopware 6.
   description: |
-    A versioned, machine-to-machine REST facade in front of the Shopware 6 Admin API.
-    Exposes the order lifecycle (create, read, update attributes, status transitions,
-    completion, cancellation, deletion) as a stable, domain-shaped contract.
+    A versioned, machine-to-machine REST API for the order lifecycle on top of
+    Shopware 6. Phase 1 is implemented as a Shopware plugin that registers its
+    own routes inside the Shopware backend (see README). Later phases evolve
+    the deployment topology without breaking this contract.
 
-    Not intended for human/browser use. All requests require TLS 1.2+; production
-    deployments require mTLS plus one of OAuth2 client credentials or API key.
+    Not intended for human/browser use. All requests require TLS 1.2+.
+
+    ### Authentication — current (Phase 1) vs. target
+
+    - **Phase 1 (current):** Shopware OAuth 2.0 at `/api/oauth/token` (grants
+      `password` and `client_credentials`). Bearer token on every request. Use
+      the `shopwareOAuth2` security scheme.
+    - **Target (Phase 5):** API gateway terminating **mTLS**, with **OAuth 2.0
+      client credentials** from a dedicated authorisation server for fine-grained
+      scopes, and **API keys** as a fallback. Use the `mTLS`,
+      `oauth2ClientCredentials`, and `apiKey` schemes.
+
+    Operations advertise both sets so the same contract describes both stages.
+    Operators are expected to enable exactly one set at a time.
+
+    ### Identifier format
+
+    All `*Id` fields use Shopware's identifier convention: **32 lowercase
+    hexadecimal characters, no dashes** (e.g. `019e79e17f17714883792eb3b8573ab6`).
+    This is not an RFC 4122 UUID. The spec keeps `format: uuid` on field
+    declarations for tooling compatibility, and exposes the precise pattern via
+    the reusable `ShopwareId` schema component. Generators that perform strict
+    RFC 4122 validation should be configured to accept `^[0-9a-f]{32}$`.
 
     See `order-api-concept.md` for the architecture rationale.
   contact:
@@ -18,10 +40,12 @@ info:
   license:
     name: Proprietary
 servers:
+  - url: https://shopware-be.lan.internal/api/order-integration/v1
+    description: Phase-1 Shopware plugin (internal LAN)
   - url: https://orders.example.com/v1
-    description: Production
+    description: Target — gateway-fronted facade (Phase 5)
   - url: https://orders.staging.example.com/v1
-    description: Staging
+    description: Target — staging
 
 tags:
   - name: Orders
@@ -43,11 +67,13 @@ tags:
   - name: Webhooks
     description: Subscriber-managed push notifications for order events.
 
-# Default: every operation requires mTLS at the transport layer AND one of
-# OAuth2 client credentials (preferred) or API key. mTLS is listed alongside
-# the other schemes so codegen tools surface it; in practice it is enforced
-# at the gateway and not optional.
+# Default global security:
+#   - Phase 1 (current): shopwareOAuth2 Bearer is sufficient.
+#   - Phase 5 (target):  mTLS plus one of oauth2ClientCredentials or apiKey.
+# Either alternative satisfies the requirement; operators enable the relevant
+# stage in their deployment.
 security:
+  - shopwareOAuth2: []
   - mTLS: []
     oauth2ClientCredentials: [orders:read]
   - mTLS: []
@@ -873,17 +899,39 @@ paths:
 components:
 
   securitySchemes:
+    shopwareOAuth2:
+      type: oauth2
+      description: |
+        **Phase 1 — current.** Authentication is delegated to Shopware's
+        built-in OAuth 2.0 server at `/api/oauth/token`. Two grant types are
+        supported in production:
+
+        - `password` — admin user (dev/admin use only).
+        - `clientCredentials` — dedicated Shopware integration user
+          (`admin: false`, restricted scope). Recommended for service-to-service.
+
+        Scopes are managed inside Shopware via the integration user's ACL roles,
+        not by `scope` strings in the token request.
+      flows:
+        password:
+          tokenUrl: /api/oauth/token
+          scopes: {}
+        clientCredentials:
+          tokenUrl: /api/oauth/token
+          scopes: {}
     mTLS:
       type: mutualTLS
       description: |
-        Client presents an X.509 certificate signed by the API's trusted CA.
-        Subject CN/SAN is matched against an allow-list and becomes the principal.
-        Enforced at the API gateway / service mesh.
+        **Phase 5 — target.** Client presents an X.509 certificate signed by
+        the API's trusted CA. Subject CN/SAN is matched against an allow-list
+        and becomes the principal. Enforced at the API gateway / service mesh.
     oauth2ClientCredentials:
       type: oauth2
       description: |
-        OAuth 2.0 Client Credentials grant. Short-lived JWT access tokens (≤ 1h).
-        Use in addition to mTLS for fine-grained scope-based authorization.
+        **Phase 5 — target.** OAuth 2.0 Client Credentials grant against a
+        dedicated authorisation server (not Shopware). Short-lived JWT access
+        tokens (≤ 1h). Use in addition to mTLS for fine-grained scope-based
+        authorization.
       flows:
         clientCredentials:
           tokenUrl: https://auth.example.com/oauth/token
@@ -904,8 +952,9 @@ components:
       in: header
       name: X-API-Key
       description: |
-        Fallback only. Acceptable behind mTLS for partners that cannot perform OAuth2.
-        Keys are stored hashed at rest and rotated quarterly.
+        **Phase 5 — target, fallback only.** Acceptable behind mTLS for partners
+        that cannot perform OAuth 2.0. Keys are stored hashed at rest and rotated
+        quarterly.
 
   parameters:
     OrderId:
@@ -1006,6 +1055,17 @@ components:
           schema: { $ref: '#/components/schemas/Problem' }
 
   schemas:
+
+    ShopwareId:
+      type: string
+      pattern: '^[0-9a-f]{32}$'
+      minLength: 32
+      maxLength: 32
+      example: 019e79e17f17714883792eb3b8573ab6
+      description: |
+        Shopware identifier — 32 lowercase hexadecimal characters, no dashes.
+        Distinct from an RFC 4122 UUID. Used wherever this spec writes
+        `format: uuid` for legacy generator compatibility.
 
     OrderStatus:
       type: string
