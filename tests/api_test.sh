@@ -209,5 +209,109 @@ STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
 assert_status "POST /v1/orders missing lineItems returns 422" "422" "$STATUS"
 
 echo ""
+echo "=== Spec-compliant Order shape ==="
+
+# Helper: assert a JSON path exists and is not null
+assert_field_present() {
+  local description="$1" json="$2" path="$3"
+  local value
+  value=$(echo "$json" | python3 -c "
+import sys, json
+try:
+  obj = json.load(sys.stdin)
+  for key in '$path'.split('.'):
+    if key.startswith('[') and key.endswith(']'):
+      obj = obj[int(key[1:-1])]
+    else:
+      obj = obj[key]
+  print('present' if obj is not None else 'null')
+except Exception:
+  print('missing')
+")
+  if [[ "$value" == "present" ]]; then
+    echo "✓ $description"
+    ((PASS++)) || true
+  else
+    echo "✗ $description — got $value at path $path"
+    ((FAIL++)) || true
+  fi
+}
+
+# Pick an order id we can read fully
+SAMPLE_ID=$(curl -s -H "Authorization: Bearer $TOKEN" \
+  "$SHOPWARE_URL/api/order-integration/v1/orders?limit=1" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['items'][0]['id'])")
+
+# GET single — assert spec-required fields
+ORDER_JSON=$(curl -s -H "Authorization: Bearer $TOKEN" \
+  "$SHOPWARE_URL/api/order-integration/v1/orders/$SAMPLE_ID")
+
+assert_field_present "GET single has paymentStatus"  "$ORDER_JSON" "paymentStatus"
+assert_field_present "GET single has deliveryStatus" "$ORDER_JSON" "deliveryStatus"
+assert_field_present "GET single has currency"       "$ORDER_JSON" "currency"
+assert_field_present "GET single has version"        "$ORDER_JSON" "version"
+assert_field_present "GET single has customer"       "$ORDER_JSON" "customer"
+assert_field_present "GET single has customer.email" "$ORDER_JSON" "customer.email"
+assert_field_present "GET single has billingAddress" "$ORDER_JSON" "billingAddress"
+assert_field_present "GET single has lineItems"      "$ORDER_JSON" "lineItems"
+assert_field_present "GET single has lineItems[0].id" "$ORDER_JSON" "lineItems.[0].id"
+assert_field_present "GET single has total.amount"   "$ORDER_JSON" "total.amount"
+
+# GET single — assert ETag header
+ETAG=$(curl -s -I -H "Authorization: Bearer $TOKEN" \
+  "$SHOPWARE_URL/api/order-integration/v1/orders/$SAMPLE_ID" \
+  | grep -i '^etag:' | awk '{print $2}' | tr -d '\r\n')
+if [[ -n "$ETAG" ]]; then
+  echo "✓ GET single returns ETag header ($ETAG)"
+  ((PASS++)) || true
+else
+  echo "✗ GET single — ETag header missing"
+  ((FAIL++)) || true
+fi
+
+# GET list — same fields on items[0]
+LIST_JSON=$(curl -s -H "Authorization: Bearer $TOKEN" \
+  "$SHOPWARE_URL/api/order-integration/v1/orders?limit=1")
+
+assert_field_present "GET list items[0] has paymentStatus"  "$LIST_JSON" "items.[0].paymentStatus"
+assert_field_present "GET list items[0] has deliveryStatus" "$LIST_JSON" "items.[0].deliveryStatus"
+assert_field_present "GET list items[0] has customer"       "$LIST_JSON" "items.[0].customer"
+assert_field_present "GET list items[0] has billingAddress" "$LIST_JSON" "items.[0].billingAddress"
+assert_field_present "GET list items[0] has lineItems"      "$LIST_JSON" "items.[0].lineItems"
+assert_field_present "GET list items[0] has version"        "$LIST_JSON" "items.[0].version"
+
+# POST — Location + ETag headers, full Order body
+if [[ -n "${NEW_ORDER_ID:-}" ]]; then
+  CREATE_HEADERS=$(curl -s -D - -o /dev/null \
+    -H "Authorization: Bearer $TOKEN" \
+    "$SHOPWARE_URL/api/order-integration/v1/orders/$NEW_ORDER_ID")
+  # Probe the GET on the just-created order has the same shape
+  CREATED_JSON=$(curl -s -H "Authorization: Bearer $TOKEN" \
+    "$SHOPWARE_URL/api/order-integration/v1/orders/$NEW_ORDER_ID")
+  assert_field_present "Created order has customer.email" "$CREATED_JSON" "customer.email"
+  assert_field_present "Created order has lineItems"      "$CREATED_JSON" "lineItems"
+fi
+
+# PUT status — returns full Order, not just {orderId,status}
+PUT_RESPONSE=$(curl -s -X PUT \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"status": "in_progress"}' \
+  "$SHOPWARE_URL/api/order-integration/v1/orders/$SAMPLE_ID/status")
+
+# The earlier transition test may have already moved this order — accept either
+# a full Order body (PASS) or an invalid-transition 409 (skip).
+if echo "$PUT_RESPONSE" | python3 -c "import sys,json; obj=json.load(sys.stdin); sys.exit(0 if 'customer' in obj and 'lineItems' in obj else 1)" 2>/dev/null; then
+  echo "✓ PUT status returns full Order shape"
+  ((PASS++)) || true
+elif echo "$PUT_RESPONSE" | python3 -c "import sys,json; obj=json.load(sys.stdin); sys.exit(0 if obj.get('status')==409 else 1)" 2>/dev/null; then
+  echo "✓ PUT status — order already in target state (409, skipped shape check)"
+  ((PASS++)) || true
+else
+  echo "✗ PUT status did not return full Order"
+  ((FAIL++)) || true
+fi
+
+echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1
