@@ -58,7 +58,7 @@ class StateMachineService
         );
     }
 
-    public function transitionPayment(string $orderId, string $targetStatus, Context $context): void
+    public function transitionPayment(string $transactionId, string $targetStatus, Context $context): void
     {
         $action = self::PAYMENT_TRANSITIONS[$targetStatus] ?? null;
 
@@ -70,14 +70,13 @@ class StateMachineService
             );
         }
 
-        // Payment transition requires the transaction ID
         $this->stateMachineRegistry->transition(
-            new Transition('order_transaction', $orderId, $action, 'stateId'),
+            new Transition('order_transaction', $transactionId, $action, 'stateId'),
             $context
         );
     }
 
-    public function transitionDelivery(string $orderId, string $targetStatus, Context $context): void
+    public function transitionDelivery(string $deliveryId, string $targetStatus, Context $context): void
     {
         $action = self::DELIVERY_TRANSITIONS[$targetStatus] ?? null;
 
@@ -90,7 +89,7 @@ class StateMachineService
         }
 
         $this->stateMachineRegistry->transition(
-            new Transition('order_delivery', $orderId, $action, 'stateId'),
+            new Transition('order_delivery', $deliveryId, $action, 'stateId'),
             $context
         );
     }
