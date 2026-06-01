@@ -137,34 +137,38 @@ STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
   -H "Authorization: Bearer $CC_TOKEN" \
   "$SHOPWARE_URL/api/order-integration/v1/orders")
 assert_status "GET /v1/orders with client credentials returns 200" "200" "$STATUS"
+# Create fresh order for transition tests
+CUSTOMER_ID=$(curl -s "$SHOPWARE_URL/api/customer?limit=1" -H "Authorization: Bearer $TOKEN" | python3 -c "import sys,json; print(json.load(sys.stdin)['data'][0]['id'])")
+TRANSITION_ORDER_ID=$(curl -s -X POST "$SHOPWARE_URL/api/order-integration/v1/orders" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "{\"salesChannelId\": \"019e77e0f8b671b2b429714572d63709\", \"customer\": {\"id\": \"$CUSTOMER_ID\"}, \"lineItems\": [{\"productId\": \"11dc680240b04f469ccba354cbf0b967\", \"quantity\": 1}]}" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+
 
 # Status transitions
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"status": "in_progress"}' \
-  "$SHOPWARE_URL/api/order-integration/v1/orders/019e79e17f17714883792eb3b8573ab6/status")
+  "$SHOPWARE_URL/api/order-integration/v1/orders/$TRANSITION_ORDER_ID/status")
 assert_status "PUT /v1/orders/{id}/status returns 200" "200" "$STATUS"
 
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"status": "paid"}' \
-  "$SHOPWARE_URL/api/order-integration/v1/orders/019e79e17f17714883792eb3b8573ab6/payment-status")
+  "$SHOPWARE_URL/api/order-integration/v1/orders/$TRANSITION_ORDER_ID/payment-status")
 assert_status "PUT /v1/orders/{id}/payment-status returns 200" "200" "$STATUS"
 
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"status": "shipped"}' \
-  "$SHOPWARE_URL/api/order-integration/v1/orders/019e79e17f17714883792eb3b8573ab6/delivery-status")
+  "$SHOPWARE_URL/api/order-integration/v1/orders/$TRANSITION_ORDER_ID/delivery-status")
 assert_status "PUT /v1/orders/{id}/delivery-status returns 200" "200" "$STATUS"
 
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"status": "invalid"}' \
-  "$SHOPWARE_URL/api/order-integration/v1/orders/019e79e17f17714883792eb3b8573ab6/status")
+  "$SHOPWARE_URL/api/order-integration/v1/orders/$TRANSITION_ORDER_ID/status")
 assert_status "PUT /v1/orders/{id}/status invalid name returns 409" "409" "$STATUS"
 
 # Bug-#7 regression: a valid status name from an incompatible source state
@@ -177,7 +181,7 @@ RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X PUT \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"status": "completed"}' \
-  "$SHOPWARE_URL/api/order-integration/v1/orders/019e79e17f17714883792eb3b8573ab6/status")
+  "$SHOPWARE_URL/api/order-integration/v1/orders/$TRANSITION_ORDER_ID/status")
 HTTP_STATUS=$(echo "$RESPONSE" | grep '^HTTP_STATUS:' | cut -d: -f2)
 BODY=$(echo "$RESPONSE" | sed '/^HTTP_STATUS:/d')
 if [[ "$HTTP_STATUS" == "409" ]] || [[ "$HTTP_STATUS" == "200" ]]; then
