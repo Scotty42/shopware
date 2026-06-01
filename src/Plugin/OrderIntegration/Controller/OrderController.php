@@ -5,8 +5,8 @@ namespace Scotty42\OrderIntegration\Controller;
 use Scotty42\OrderIntegration\Exception\OrderNotFoundException;
 use Scotty42\OrderIntegration\Service\OrderCreationService;
 use Scotty42\OrderIntegration\Service\OrderMapper;
+use Scotty42\OrderIntegration\Service\OrderPatchService;
 use Scotty42\OrderIntegration\Validator\QueryValidator;
-use Shopware\Core\Checkout\Order\OrderEntity;
 use Shopware\Core\Framework\Context;
 use Shopware\Core\Framework\DataAbstractionLayer\EntityRepository;
 use Shopware\Core\Framework\DataAbstractionLayer\Search\Criteria;
@@ -24,26 +24,26 @@ use Symfony\Component\Routing\Attribute\Route;
 #[Route(defaults: ['_routeScope' => ['api']])]
 class OrderController extends AbstractController
 {
-    /**
-     * Full association set required to render the spec-compliant Order shape.
-     * Keep in sync with OrderMapper expectations.
-     */
     private const ASSOCIATIONS = [
         'lineItems',
+        'deliveries',
+        'transactions',
         'deliveries.stateMachineState',
-        'deliveries.shippingOrderAddress.country',
         'transactions.stateMachineState',
-        'addresses.country',
+        'orderCustomer',
+        'deliveries.stateMachineState',
+        'transactions.stateMachineState',
+        'orderCustomer',
+        'addresses',
         'stateMachineState',
         'currency',
-        'orderCustomer',
-        'tags',
     ];
 
     public function __construct(
         private readonly EntityRepository $orderRepository,
         private readonly QueryValidator $queryValidator,
         private readonly OrderCreationService $orderCreationService,
+        private readonly OrderPatchService $orderPatchService,
         private readonly OrderMapper $orderMapper,
     ) {}
 
@@ -99,14 +99,8 @@ class OrderController extends AbstractController
             array_pop($elements);
         }
 
-        $items = array_map(
-            fn(OrderEntity $order): array => $this->orderMapper->mapOrder($order),
-            $elements
-        );
-
         $nextCursor = null;
         if ($hasMore && !empty($elements)) {
-            /** @var OrderEntity $last */
             $last = end($elements);
             $nextCursor = base64_encode(json_encode([
                 'createdAt' => $last->getCreatedAt()?->format(\DateTimeInterface::ATOM),
@@ -115,7 +109,7 @@ class OrderController extends AbstractController
         }
 
         return new JsonResponse([
-            'items' => $items,
+            'items' => array_map(fn($order) => $this->orderMapper->mapOrder($order), $elements),
             'page'  => [
                 'limit'      => $limit,
                 'nextCursor' => $nextCursor,
@@ -140,19 +134,9 @@ class OrderController extends AbstractController
             return $this->validationError('/lineItems', 'required', 'lineItems must not be empty');
         }
 
-        $orderId = $this->orderCreationService->createOrder($data, $context);
+        $order = $this->orderCreationService->createOrder($data, $context);
 
-        $order = $this->loadOrder($orderId, $context);
-        $payload = $this->orderMapper->mapOrder($order);
-
-        return new JsonResponse(
-            $payload,
-            Response::HTTP_CREATED,
-            [
-                'Location' => sprintf('/api/order-integration/v1/orders/%s', $orderId),
-                'ETag'     => $this->orderMapper->etagFor($order),
-            ]
-        );
+        return new JsonResponse($order, Response::HTTP_CREATED);
     }
 
     #[Route(
@@ -162,7 +146,7 @@ class OrderController extends AbstractController
     )]
     public function get(string $orderId, Context $context): JsonResponse
     {
-        $order = $this->loadOrder($orderId, $context);
+        $order = $this->findOrder($orderId, $context);
 
         return new JsonResponse(
             $this->orderMapper->mapOrder($order),
@@ -171,38 +155,73 @@ class OrderController extends AbstractController
         );
     }
 
-    /**
-     * Load an order with all spec-required associations. Throws 404 if missing.
-     */
-    private function loadOrder(string $orderId, Context $context): OrderEntity
+    #[Route(
+        path: '/api/order-integration/v1/orders/{orderId}',
+        name: 'api.order-integration.orders.patch',
+        methods: ['PATCH']
+    )]
+    public function patch(string $orderId, Request $request, Context $context): JsonResponse
+    {
+        $this->findOrder($orderId, $context); // assert exists
+
+        $data = json_decode($request->getContent(), true) ?? [];
+
+        $allowed = ['customerComment', 'customFields', 'tags', 'billingAddress', 'shippingAddress'];
+        $data = array_intersect_key($data, array_flip($allowed));
+
+        if (empty($data)) {
+            return $this->validationError('/', 'no_mutable_fields', 'No mutable fields provided.');
+        }
+
+        $this->orderPatchService->patch($orderId, $data, $context);
+
+        $order = $this->findOrder($orderId, $context);
+
+        return new JsonResponse(
+            $this->orderMapper->mapOrder($order),
+            Response::HTTP_OK,
+            ['ETag' => $this->orderMapper->etagFor($order)]
+        );
+    }
+
+    private function findOrder(string $orderId, Context $context)
     {
         $criteria = new Criteria([$orderId]);
         $criteria->addAssociations(self::ASSOCIATIONS);
 
         $order = $this->orderRepository->search($criteria, $context)->first();
 
-        if (!$order instanceof OrderEntity) {
+        if ($order === null) {
             throw new OrderNotFoundException($orderId);
         }
 
         return $order;
     }
 
+    private function mapOrder($order): array
+    {
+        return [
+            'id'          => $order->getId(),
+            'orderNumber' => $order->getOrderNumber(),
+            'status'      => $order->getStateMachineState()?->getTechnicalName(),
+            'total'       => [
+                'amount'   => $order->getAmountTotal(),
+                'currency' => $order->getCurrency()?->getIsoCode(),
+            ],
+            'createdAt'   => $order->getCreatedAt()?->format(\DateTimeInterface::ATOM),
+            'updatedAt'   => $order->getUpdatedAt()?->format(\DateTimeInterface::ATOM),
+        ];
+    }
+
     private function validationError(string $pointer, string $code, string $message): JsonResponse
     {
-        return new JsonResponse(
-            [
-                'type'   => 'about:blank',
-                'title'  => 'Unprocessable Content',
-                'status' => Response::HTTP_UNPROCESSABLE_ENTITY,
-                'detail' => 'Validation failed.',
-                'code'   => 'order.validation_failed',
-                'errors' => [
-                    ['pointer' => $pointer, 'code' => $code, 'message' => $message],
-                ],
-            ],
-            Response::HTTP_UNPROCESSABLE_ENTITY,
-            ['Content-Type' => 'application/problem+json']
-        );
+        return new JsonResponse([
+            'type'   => 'about:blank',
+            'title'  => 'Unprocessable Content',
+            'status' => 422,
+            'detail' => 'Validation failed.',
+            'code'   => 'order.validation_failed',
+            'errors' => [['pointer' => $pointer, 'code' => $code, 'message' => $message]],
+        ], Response::HTTP_UNPROCESSABLE_ENTITY);
     }
 }

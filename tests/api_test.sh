@@ -341,5 +341,31 @@ else
 fi
 
 echo ""
+
+# PATCH /v1/orders/{id}
+PATCH_RESPONSE=$(curl -s -X PATCH \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"customerComment": "Bitte klingeln"}' \
+  "$SHOPWARE_URL/api/order-integration/v1/orders/019e79d3be9272308522b3aea51a4adc")
+
+COMMENT=$(echo "$PATCH_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('customerComment',''))" 2>/dev/null || echo "")
+assert_eq "PATCH /v1/orders/{id} updates customerComment" "Bitte klingeln" "$COMMENT"
+
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{}' \
+  "$SHOPWARE_URL/api/order-integration/v1/orders/019e79d3be9272308522b3aea51a4adc")
+assert_status "PATCH /v1/orders/{id} empty body returns 422" "422" "$STATUS"
+
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"customerComment": "test"}' \
+  "$SHOPWARE_URL/api/order-integration/v1/orders/b878ba70bf7d47a12ae61ad5b1dc8582")
+assert_status "PATCH /v1/orders/{id} unknown id returns 404" "404" "$STATUS"
+
+echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1

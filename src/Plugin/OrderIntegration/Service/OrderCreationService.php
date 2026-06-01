@@ -7,6 +7,8 @@ use Shopware\Core\Checkout\Cart\Order\OrderConverter;
 use Shopware\Core\Checkout\Cart\Order\OrderPersister;
 use Shopware\Core\Checkout\Cart\SalesChannel\CartService;
 use Shopware\Core\Framework\Context;
+use Shopware\Core\Framework\DataAbstractionLayer\EntityRepository;
+use Shopware\Core\Framework\DataAbstractionLayer\Search\Criteria;
 use Shopware\Core\Framework\Uuid\Uuid;
 use Shopware\Core\System\SalesChannel\Context\AbstractSalesChannelContextFactory;
 use Shopware\Core\System\SalesChannel\Context\SalesChannelContextService;
@@ -18,15 +20,12 @@ class OrderCreationService
         private readonly OrderConverter $orderConverter,
         private readonly OrderPersister $orderPersister,
         private readonly AbstractSalesChannelContextFactory $salesChannelContextFactory,
+        private readonly EntityRepository $customerRepository,
+        private readonly EntityRepository $orderRepository,
+        private readonly OrderMapper $orderMapper,
     ) {}
 
-    /**
-     * Builds a cart from the caller's domain payload and persists it as a
-     * Shopware order via the standard checkout pipeline. Returns the new
-     * order id; mapping to the spec-compliant response shape is done in
-     * the controller via OrderMapper.
-     */
-    public function createOrder(array $data, Context $context): string
+    public function createOrder(array $data, Context $context): array
     {
         $salesChannelId = $data['salesChannelId'];
         $token = Uuid::randomHex();
@@ -63,6 +62,17 @@ class OrderCreationService
             $cart->setCustomerComment($data['customerComment']);
         }
 
-        return $this->orderPersister->persist($cart, $salesChannelContext);
+        $orderId = $this->orderPersister->persist($cart, $salesChannelContext);
+
+        $criteria = new Criteria([$orderId]);
+        $criteria->addAssociations([
+            'lineItems', 'deliveries', 'transactions', 'addresses',
+            'stateMachineState', 'currency', 'orderCustomer',
+            'deliveries.stateMachineState', 'transactions.stateMachineState',
+        ]);
+
+        $order = $this->orderRepository->search($criteria, $context)->first();
+
+        return $this->orderMapper->mapOrder($order);
     }
 }
