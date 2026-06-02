@@ -5,7 +5,6 @@ namespace Scotty42\OrderIntegration\Service;
 use Shopware\Core\Framework\Context;
 use Shopware\Core\Framework\DataAbstractionLayer\EntityRepository;
 use Shopware\Core\Framework\DataAbstractionLayer\Search\Criteria;
-use Shopware\Core\Framework\DataAbstractionLayer\Search\Filter\EqualsFilter;
 
 class OrderPatchService
 {
@@ -67,21 +66,38 @@ class OrderPatchService
         ]], $context);
     }
 
+    /**
+     * Bug B2: the previous implementation filtered order_address by
+     * `type = 'shipping'`, a field that does not exist on the entity —
+     * the filter always returned 0 rows and the PATCH was a silent no-op.
+     *
+     * Order shipping addresses are referenced from `order_delivery.
+     * shippingOrderAddressId`, not flagged on the address itself. Phase 1
+     * updates the **first** delivery's shipping address. Multi-delivery
+     * orders should target the dedicated `/orders/{id}/deliveries/{did}`
+     * sub-resource (out of scope for this method).
+     */
     private function updateShippingAddress(string $orderId, array $address, Context $context): void
     {
-        // Fetch the delivery shipping address
-        $criteria = new Criteria();
-        $criteria->addFilter(new EqualsFilter('orderId', $orderId));
-        $criteria->addFilter(new EqualsFilter('type', 'shipping'));
+        $criteria = new Criteria([$orderId]);
+        $criteria->addAssociation('deliveries');
+        $order = $this->orderRepository->search($criteria, $context)->first();
+        if ($order === null) {
+            return;
+        }
 
-        $addresses = $this->orderAddressRepository->search($criteria, $context);
+        $deliveries = $order->getDeliveries();
+        if ($deliveries === null || $deliveries->count() === 0) {
+            return;
+        }
 
-        if ($addresses->count() === 0) {
+        $deliveryAddressId = $deliveries->first()?->getShippingOrderAddressId();
+        if ($deliveryAddressId === null) {
             return;
         }
 
         $this->orderAddressRepository->update([[
-            'id'     => $addresses->first()->getId(),
+            'id' => $deliveryAddressId,
             ...$this->mapAddress($address),
         ]], $context);
     }

@@ -3,6 +3,7 @@
 namespace Scotty42\OrderIntegration\Controller;
 
 use Scotty42\OrderIntegration\Exception\OrderNotFoundException;
+use Scotty42\OrderIntegration\Exception\ValidationException;
 use Scotty42\OrderIntegration\Service\OrderMapper;
 use Scotty42\OrderIntegration\Service\StateMachineService;
 use Shopware\Core\Checkout\Order\OrderEntity;
@@ -18,22 +19,6 @@ use Symfony\Component\Routing\Attribute\Route;
 #[Route(defaults: ['_routeScope' => ['api']])]
 class StatusController extends AbstractController
 {
-    /**
-     * Same association set as OrderController — needed to render the full
-     * Order shape in the transition responses.
-     */
-    private const ASSOCIATIONS = [
-        'lineItems',
-        'deliveries.stateMachineState',
-        'deliveries.shippingOrderAddress.country',
-        'transactions.stateMachineState',
-        'addresses.country',
-        'stateMachineState',
-        'currency',
-        'orderCustomer',
-        'tags',
-    ];
-
     public function __construct(
         private readonly EntityRepository $orderRepository,
         private readonly StateMachineService $stateMachineService,
@@ -131,7 +116,7 @@ class StatusController extends AbstractController
     private function respondWithOrder(string $orderId, Context $context): JsonResponse
     {
         $criteria = new Criteria([$orderId]);
-        $criteria->addAssociations(self::ASSOCIATIONS);
+        $criteria->addAssociations(OrderMapper::REQUIRED_ASSOCIATIONS);
 
         $order = $this->orderRepository->search($criteria, $context)->first();
 
@@ -161,11 +146,19 @@ class StatusController extends AbstractController
         );
     }
 
+    /**
+     * Bug B1: previously threw \InvalidArgumentException, which is not in
+     * ExceptionSubscriber's allow-list and surfaced as a 500. Translating
+     * to ValidationException at the source produces the documented 422
+     * application/problem+json response with a JSON Pointer.
+     */
     private function getRequiredField(Request $request, string $field): string
     {
         $data = json_decode($request->getContent(), true);
-        if (empty($data[$field])) {
-            throw new \InvalidArgumentException(sprintf('Field "%s" is required.', $field));
+        if (!is_array($data) || empty($data[$field])) {
+            throw new ValidationException([
+                ['pointer' => '/' . $field, 'code' => 'required', 'message' => sprintf('%s is required', $field)],
+            ]);
         }
 
         return $data[$field];
