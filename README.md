@@ -25,25 +25,23 @@ The solution is a **Shopware plugin** that registers its own API routes and call
 ## Architecture
 
 ### Deployment topology
-┌──────────────────────────────────────────┐
-│  LXC Container: shopware-be              │
-│                                          │
-│  Apache 2.4 (port 80)                    │
-│    └── PHP 8.4-FPM                       │
-│         └── Shopware 6.6.x / 6.7.x       │
-│              └── OrderIntegration Plugin │
-│                   └── /api/order-integration/v1/... │
-│                                          │
-│  MariaDB 10.11 (localhost:3306)          │
-└──────────────────────────────────────────┘
-│ HTTP (LAN)
-┌──────────────────────────────────────────┐
-│  LXC Container: shopware-fe              │
-│                                          │
-│  Node.js 22 / Nuxt 3 (port 3000)         │
-│  http://shopware-fe.lan.internal:3000    │
-└──────────────────────────────────────────┘
+```mermaid
+graph TB
+    subgraph BE["LXC: shopware-be"]
+        Apache["Apache 2.4 (port 80)"]
+        PHP["PHP 8.4-FPM"]
+        SW["Shopware 6.6.x / 6.7.x"]
+        Plugin["OrderIntegration Plugin\n/api/order-integration/v1/..."]
+        DB["MariaDB 10.11"]
+        Apache --> PHP --> SW --> Plugin
+    end
 
+    subgraph FE["LXC: shopware-fe"]
+        Nuxt["Node.js 22 / Nuxt 3 (port 3000)\nhttp://shopware-fe.lan.internal:3000"]
+    end
+
+    FE -->|"HTTP LAN"| BE
+```
 The plugin lives inside the Shopware container. Test scripts call `http://localhost/...` because they run on the same host. External callers use `http://shopware-be.lan.internal/...`.
 
 ### Plugin location
