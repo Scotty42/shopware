@@ -384,6 +384,21 @@ DELIVERY_ID=$(echo "$DELIVERY_TEST_ORDER" | python3 -c "import sys,json; print(j
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
   -H "Authorization: Bearer $TOKEN" \
   "$SHOPWARE_URL/api/order-integration/v1/orders/$DELIVERY_ORDER_ID/deliveries")
+# POST /v1/orders/{id}/deliveries — split shipment
+NEW_DELIVERY=$(curl -s -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{}' \
+  "$SHOPWARE_URL/api/order-integration/v1/orders/$DELIVERY_ORDER_ID/deliveries")
+NEW_DELIVERY_ID=$(echo "$NEW_DELIVERY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
+if [[ -n "$NEW_DELIVERY_ID" ]]; then
+  echo "✓ POST /v1/orders/{id}/deliveries created delivery $NEW_DELIVERY_ID"
+  ((PASS++)) || true
+else
+  echo "✗ POST /v1/orders/{id}/deliveries failed"
+  ((FAIL++)) || true
+fi
+
 assert_status "GET /v1/orders/{id}/deliveries returns 200" "200" "$STATUS"
 
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" \

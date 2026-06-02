@@ -20,18 +20,20 @@
             <argument type="service" id="order.repository"/>
             <argument type="service" id="Scotty42\OrderIntegration\Service\StateMachineService"/>
             <argument type="service" id="Scotty42\OrderIntegration\Service\OrderMapper"/>
-            <argument type="service" id="Scotty42\OrderIntegration\Service\StateMachineService"/>
             <tag name="controller.service_arguments"/>
             <call method="setContainer">
                 <argument type="service" id="service_container"/>
             </call>
         </service>
 
-
         <service id="Scotty42\OrderIntegration\Controller\DeliveryController" public="true">
             <argument type="service" id="order.repository"/>
             <argument type="service" id="order_delivery.repository"/>
+            <argument type="service" id="order_address.repository"/>
             <argument type="service" id="Scotty42\OrderIntegration\Service\StateMachineService"/>
+            <argument type="service" id="Shopware\Core\System\StateMachine\Loader\InitialStateIdLoader"/>
+            <argument type="service" id="country.repository"/>
+            <argument type="service" id="salutation.repository"/>
             <tag name="controller.service_arguments"/>
             <call method="setContainer">
                 <argument type="service" id="service_container"/>
