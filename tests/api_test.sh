@@ -183,7 +183,6 @@ RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X PUT \
   -d '{"status": "completed"}' \
   "$SHOPWARE_URL/api/order-integration/v1/orders/$TRANSITION_ORDER_ID/status")
 HTTP_STATUS=$(echo "$RESPONSE" | grep '^HTTP_STATUS:' | cut -d: -f2)
-BODY=$(echo "$RESPONSE" | sed '/^HTTP_STATUS:/d')
 if [[ "$HTTP_STATUS" == "409" ]] || [[ "$HTTP_STATUS" == "200" ]]; then
   echo "✓ PUT /v1/orders/{id}/status illegal transition returns 409 (or 200 if reachable; got $HTTP_STATUS)"
   ((PASS++)) || true
@@ -221,10 +220,13 @@ else
 fi
 
 # POST /v1/orders — missing salesChannelId returns 422
+# Use double quotes so the shell expands $SHOPWARE_TEST_PRODUCT_ID; the test
+# asserts that the API rejects requests that lack salesChannelId even when
+# the rest of the body is structurally valid.
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"lineItems": [{"productId": "$SHOPWARE_TEST_PRODUCT_ID", "quantity": 1}]}' \
+  -d "{\"lineItems\": [{\"productId\": \"$SHOPWARE_TEST_PRODUCT_ID\", \"quantity\": 1}]}" \
   "$SHOPWARE_URL/api/order-integration/v1/orders")
 assert_status "POST /v1/orders missing salesChannelId returns 422" "422" "$STATUS"
 
@@ -232,7 +234,7 @@ assert_status "POST /v1/orders missing salesChannelId returns 422" "422" "$STATU
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"salesChannelId": "$SHOPWARE_SALES_CHANNEL_ID"}' \
+  -d "{\"salesChannelId\": \"$SHOPWARE_SALES_CHANNEL_ID\"}" \
   "$SHOPWARE_URL/api/order-integration/v1/orders")
 assert_status "POST /v1/orders missing lineItems returns 422" "422" "$STATUS"
 
@@ -349,12 +351,13 @@ PATCH_ORDER_ID=$(curl -s -X POST "$SHOPWARE_URL/api/order-integration/v1/orders"
   -d "{\"salesChannelId\": \"$SHOPWARE_SALES_CHANNEL_ID\", \"customer\": {\"id\": \"$CUSTOMER_ID\"}, \"lineItems\": [{\"productId\": \"$SHOPWARE_TEST_PRODUCT_ID\", \"quantity\": 1}]}" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
 
-# PATCH /v1/orders/{id}
+# PATCH /v1/orders/{id} — use the dynamic id created above, not a hardcoded
+# fixture id (the previous values existed only on the developer's machine).
 PATCH_RESPONSE=$(curl -s -X PATCH \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"customerComment": "Bitte klingeln"}' \
-  "$SHOPWARE_URL/api/order-integration/v1/orders/019e79d3be9272308522b3aea51a4adc")
+  "$SHOPWARE_URL/api/order-integration/v1/orders/$PATCH_ORDER_ID")
 
 COMMENT=$(echo "$PATCH_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('customerComment',''))" 2>/dev/null || echo "")
 assert_eq "PATCH /v1/orders/{id} updates customerComment" "Bitte klingeln" "$COMMENT"
@@ -363,7 +366,7 @@ STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{}' \
-  "$SHOPWARE_URL/api/order-integration/v1/orders/019e79d3be9272308522b3aea51a4adc")
+  "$SHOPWARE_URL/api/order-integration/v1/orders/$PATCH_ORDER_ID")
 assert_status "PATCH /v1/orders/{id} empty body returns 422" "422" "$STATUS"
 
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH \
@@ -372,6 +375,28 @@ STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH \
   -d '{"customerComment": "test"}' \
   "$SHOPWARE_URL/api/order-integration/v1/orders/b878ba70bf7d47a12ae61ad5b1dc8582")
 assert_status "PATCH /v1/orders/{id} unknown id returns 404" "404" "$STATUS"
+
+# Bug-B1 regression: PUT status with no `status` field must be 422, not 500.
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{}' \
+  "$SHOPWARE_URL/api/order-integration/v1/orders/$PATCH_ORDER_ID/status")
+assert_status "PUT /v1/orders/{id}/status with no status field returns 422" "422" "$STATUS"
+
+# Bug-B2 regression: PATCH shippingAddress must actually persist.
+PATCH_RESPONSE=$(curl -s -X PATCH \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"shippingAddress": {"street": "Neue Strasse 9"}}' \
+  "$SHOPWARE_URL/api/order-integration/v1/orders/$PATCH_ORDER_ID")
+NEW_STREET=$(echo "$PATCH_RESPONSE" | python3 -c "
+import sys, json
+obj = json.load(sys.stdin)
+addr = obj.get('shippingAddress') or {}
+print(addr.get('street', ''))
+" 2>/dev/null || echo "")
+assert_eq "PATCH shippingAddress persists street" "Neue Strasse 9" "$NEW_STREET"
 
 # Delivery sub-resource tests
 DELIVERY_TEST_ORDER=$(curl -s -X POST "$SHOPWARE_URL/api/order-integration/v1/orders" \
