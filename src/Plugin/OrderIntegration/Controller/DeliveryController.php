@@ -3,6 +3,7 @@
 namespace Scotty42\OrderIntegration\Controller;
 
 use Scotty42\OrderIntegration\Exception\OrderNotFoundException;
+use Scotty42\OrderIntegration\Exception\ValidationException;
 use Scotty42\OrderIntegration\Service\StateMachineService;
 use Shopware\Core\Checkout\Order\Aggregate\OrderDelivery\OrderDeliveryStates;
 use Shopware\Core\Framework\Context;
@@ -150,9 +151,15 @@ class DeliveryController extends AbstractController
             $update['shippingMethodId'] = $data['shippingMethodId'];
         }
 
-        if (count($update) > 1) {
-            $this->orderDeliveryRepository->update([$update], $context);
+        // Bug B12: consistency with OrderController::patch — empty body
+        // returns 422 instead of silently passing through.
+        if (count($update) === 1) {
+            throw new ValidationException([
+                ['pointer' => '/', 'code' => 'no_mutable_fields', 'message' => 'No mutable fields provided.'],
+            ]);
         }
+
+        $this->orderDeliveryRepository->update([$update], $context);
 
         $delivery = $this->findDelivery($deliveryId, $orderId, $context);
 
@@ -229,20 +236,49 @@ class DeliveryController extends AbstractController
         return $delivery;
     }
 
+    /**
+     * Bug B8: previously returned '' when the country code was unknown,
+     * which propagated into order_address.countryId (a non-nullable
+     * foreign key) and crashed with a DB exception → 500. We surface a
+     * 422 with a JSON Pointer to the offending field instead.
+     */
     private function resolveCountryId(string $iso, Context $context): string
     {
         $criteria = new Criteria();
         $criteria->addFilter(new EqualsFilter('iso', $iso));
         $result = $this->countryRepository->search($criteria, $context)->first();
-        return $result?->getId() ?? '';
+
+        if ($result === null) {
+            throw new ValidationException([
+                [
+                    'pointer' => '/shippingAddress/countryCode',
+                    'code'    => 'unknown_country',
+                    'message' => sprintf('Unknown country code "%s".', $iso),
+                ],
+            ]);
+        }
+
+        return $result->getId();
     }
 
+    /**
+     * The `not_specified` salutation is a Shopware system fixture and
+     * should always exist on a healthy installation. Missing means the
+     * Shopware install is broken — surface as a real 5xx (not a 422).
+     */
     private function resolveSalutationId(Context $context): string
     {
         $criteria = new Criteria();
         $criteria->addFilter(new EqualsFilter('salutationKey', 'not_specified'));
         $result = $this->salutationRepository->search($criteria, $context)->first();
-        return $result?->getId() ?? '';
+
+        if ($result === null) {
+            throw new \RuntimeException(
+                'System salutation "not_specified" is missing — Shopware installation is incomplete.'
+            );
+        }
+
+        return $result->getId();
     }
 
     private function mapDelivery($delivery): array
