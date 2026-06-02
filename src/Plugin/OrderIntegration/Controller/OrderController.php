@@ -3,12 +3,13 @@
 namespace Scotty42\OrderIntegration\Controller;
 
 use Scotty42\OrderIntegration\Exception\OrderNotFoundException;
+use Scotty42\OrderIntegration\Exception\ValidationException;
 use Scotty42\OrderIntegration\Service\OrderCreationService;
 use Scotty42\OrderIntegration\Service\OrderMapper;
-use Scotty42\OrderIntegration\Exception\InvalidTransitionException;
 use Scotty42\OrderIntegration\Service\OrderPatchService;
 use Scotty42\OrderIntegration\Service\StateMachineService;
 use Scotty42\OrderIntegration\Validator\QueryValidator;
+use Shopware\Core\Checkout\Order\OrderEntity;
 use Shopware\Core\Framework\Context;
 use Shopware\Core\Framework\DataAbstractionLayer\EntityRepository;
 use Shopware\Core\Framework\DataAbstractionLayer\Search\Criteria;
@@ -26,21 +27,6 @@ use Symfony\Component\Routing\Attribute\Route;
 #[Route(defaults: ['_routeScope' => ['api']])]
 class OrderController extends AbstractController
 {
-    private const ASSOCIATIONS = [
-        'lineItems',
-        'deliveries',
-        'transactions',
-        'deliveries.stateMachineState',
-        'transactions.stateMachineState',
-        'orderCustomer',
-        'deliveries.stateMachineState',
-        'transactions.stateMachineState',
-        'orderCustomer',
-        'addresses',
-        'stateMachineState',
-        'currency',
-    ];
-
     public function __construct(
         private readonly EntityRepository $orderRepository,
         private readonly QueryValidator $queryValidator,
@@ -64,7 +50,7 @@ class OrderController extends AbstractController
         $criteria = new Criteria();
         $criteria->addSorting(new FieldSorting('createdAt', FieldSorting::DESCENDING));
         $criteria->addSorting(new FieldSorting('id', FieldSorting::DESCENDING));
-        $criteria->addAssociations(self::ASSOCIATIONS);
+        $criteria->addAssociations(OrderMapper::REQUIRED_ASSOCIATIONS);
         $criteria->setLimit($limit + 1);
 
         if ($status = $request->query->get('status')) {
@@ -112,7 +98,7 @@ class OrderController extends AbstractController
         }
 
         return new JsonResponse([
-            'items' => array_map(fn($order) => $this->orderMapper->mapOrder($order), $elements),
+            'items' => array_map(fn(OrderEntity $order) => $this->orderMapper->mapOrder($order), $elements),
             'page'  => [
                 'limit'      => $limit,
                 'nextCursor' => $nextCursor,
@@ -129,17 +115,34 @@ class OrderController extends AbstractController
     {
         $data = json_decode($request->getContent(), true);
 
+        if (!is_array($data)) {
+            throw new ValidationException([
+                ['pointer' => '/', 'code' => 'invalid_json', 'message' => 'Request body must be a JSON object.'],
+            ]);
+        }
+
+        $errors = [];
         if (empty($data['salesChannelId'])) {
-            return $this->validationError('/salesChannelId', 'required', 'salesChannelId is required');
+            $errors[] = ['pointer' => '/salesChannelId', 'code' => 'required', 'message' => 'salesChannelId is required'];
         }
-
         if (empty($data['lineItems'])) {
-            return $this->validationError('/lineItems', 'required', 'lineItems must not be empty');
+            $errors[] = ['pointer' => '/lineItems', 'code' => 'required', 'message' => 'lineItems must not be empty'];
+        }
+        if (!empty($errors)) {
+            throw new ValidationException($errors);
         }
 
-        $order = $this->orderCreationService->createOrder($data, $context);
+        $orderId = $this->orderCreationService->createOrder($data, $context);
+        $order = $this->findOrder($orderId, $context);
 
-        return new JsonResponse($order, Response::HTTP_CREATED);
+        return new JsonResponse(
+            $this->orderMapper->mapOrder($order),
+            Response::HTTP_CREATED,
+            [
+                'Location' => sprintf('/api/order-integration/v1/orders/%s', $orderId),
+                'ETag'     => $this->orderMapper->etagFor($order),
+            ]
+        );
     }
 
     #[Route(
@@ -173,7 +176,9 @@ class OrderController extends AbstractController
         $data = array_intersect_key($data, array_flip($allowed));
 
         if (empty($data)) {
-            return $this->validationError('/', 'no_mutable_fields', 'No mutable fields provided.');
+            throw new ValidationException([
+                ['pointer' => '/', 'code' => 'no_mutable_fields', 'message' => 'No mutable fields provided.'],
+            ]);
         }
 
         $this->orderPatchService->patch($orderId, $data, $context);
@@ -186,7 +191,6 @@ class OrderController extends AbstractController
             ['ETag' => $this->orderMapper->etagFor($order)]
         );
     }
-
 
     #[Route(
         path: '/api/order-integration/v1/orders/{orderId}',
@@ -206,57 +210,31 @@ class OrderController extends AbstractController
                 'status' => 403,
                 'detail' => 'Hard delete requires scope orders:hard_delete. Not yet implemented.',
                 'code'   => 'order.hard_delete_not_permitted',
-            ], Response::HTTP_FORBIDDEN);
+            ], Response::HTTP_FORBIDDEN, ['Content-Type' => 'application/problem+json']);
         }
 
-        // Soft delete: transition to cancelled
+        // Soft delete: transition to cancelled. If already cancelled, the
+        // state-machine will reject the transition — treat as idempotent.
         try {
             $this->stateMachineService->transitionOrder($orderId, 'cancelled', $context);
         } catch (\Scotty42\OrderIntegration\Exception\InvalidTransitionException $e) {
-            // Already cancelled — idempotent, treat as success
+            // Already cancelled — idempotent success.
         }
 
         return new JsonResponse(null, Response::HTTP_NO_CONTENT);
     }
 
-    private function findOrder(string $orderId, Context $context)
+    private function findOrder(string $orderId, Context $context): OrderEntity
     {
         $criteria = new Criteria([$orderId]);
-        $criteria->addAssociations(self::ASSOCIATIONS);
+        $criteria->addAssociations(OrderMapper::REQUIRED_ASSOCIATIONS);
 
         $order = $this->orderRepository->search($criteria, $context)->first();
 
-        if ($order === null) {
+        if (!$order instanceof OrderEntity) {
             throw new OrderNotFoundException($orderId);
         }
 
         return $order;
-    }
-
-    private function mapOrder($order): array
-    {
-        return [
-            'id'          => $order->getId(),
-            'orderNumber' => $order->getOrderNumber(),
-            'status'      => $order->getStateMachineState()?->getTechnicalName(),
-            'total'       => [
-                'amount'   => $order->getAmountTotal(),
-                'currency' => $order->getCurrency()?->getIsoCode(),
-            ],
-            'createdAt'   => $order->getCreatedAt()?->format(\DateTimeInterface::ATOM),
-            'updatedAt'   => $order->getUpdatedAt()?->format(\DateTimeInterface::ATOM),
-        ];
-    }
-
-    private function validationError(string $pointer, string $code, string $message): JsonResponse
-    {
-        return new JsonResponse([
-            'type'   => 'about:blank',
-            'title'  => 'Unprocessable Content',
-            'status' => 422,
-            'detail' => 'Validation failed.',
-            'code'   => 'order.validation_failed',
-            'errors' => [['pointer' => $pointer, 'code' => $code, 'message' => $message]],
-        ], Response::HTTP_UNPROCESSABLE_ENTITY);
     }
 }

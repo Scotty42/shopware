@@ -10,15 +10,35 @@ use Shopware\Core\Checkout\Order\OrderEntity;
  * Maps a Shopware OrderEntity to the spec-compliant JSON shape declared
  * in docs/order-api-openapi.yaml (#/components/schemas/Order).
  *
- * Required associations on the caller side:
- *   stateMachineState, currency, lineItems, orderCustomer,
- *   transactions.stateMachineState, deliveries.stateMachineState,
- *   addresses.country, tags.
+ * Required associations on the caller side: see REQUIRED_ASSOCIATIONS.
+ * Every controller / service that loads an order for mapping MUST pass
+ * this constant to Criteria::addAssociations() — otherwise fields like
+ * `billingAddress.countryCode`, `tags`, and `paymentStatus` come back
+ * empty even though they would be valid on the entity.
  *
  * Keep this class free of Shopware DAL queries — it formats only.
  */
 class OrderMapper
 {
+    /**
+     * Single source of truth for the association tree needed to render a
+     * spec-compliant Order payload. Centralised here so OrderController,
+     * StatusController, and OrderCreationService can't drift apart.
+     *
+     * @var list<string>
+     */
+    public const REQUIRED_ASSOCIATIONS = [
+        'stateMachineState',
+        'currency',
+        'lineItems',
+        'transactions.stateMachineState',
+        'deliveries.stateMachineState',
+        'deliveries.shippingOrderAddress.country',
+        'addresses.country',
+        'orderCustomer',
+        'tags',
+    ];
+
     /**
      * @return array<string,mixed>
      */
