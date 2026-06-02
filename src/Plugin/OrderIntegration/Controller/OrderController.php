@@ -60,6 +60,9 @@ class OrderController extends AbstractController
         if ($customerId = $request->query->get('customerId')) {
             $criteria->addFilter(new EqualsFilter('orderCustomer.customerId', $customerId));
         }
+        if ($salesChannelId = $request->query->get('salesChannelId')) {
+            $criteria->addFilter(new EqualsFilter('salesChannelId', $salesChannelId));
+        }
         if ($createdAfter = $request->query->get('createdAfter')) {
             $criteria->addFilter(new RangeFilter('createdAt', [RangeFilter::GTE => $createdAfter]));
         }
