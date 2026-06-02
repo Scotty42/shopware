@@ -219,16 +219,29 @@ cp .env.test.dist .env.test
 
 ### Run tests
 
-```bash
-# Bash-based integration suite — requires a live Shopware backend.
-# Number of assertions grows with each PR; check the script header.
-tests/api_test.sh
+Two suites cover different layers:
 
-# Create a test order via Store API
-tests/create_test_order.sh
+**Unit tests (PHPUnit)** — no Shopware kernel required, runs in CI:
+
+```bash
+composer install
+vendor/bin/phpunit            # full unit suite
+composer test:unit            # alias
 ```
 
-A PHPUnit suite for the mappers, validators, and state-machine wrapper is planned (see Roadmap, Phase 5).
+Coverage: `QueryValidator`, `StateMachineService` (mapping + exception translation), `OrderMapper` (associations contract + ETag stability + payload keys). See `tests/Unit/`.
+
+**Integration tests (Bash)** — requires a live Shopware backend with the plugin installed:
+
+```bash
+cp .env.test.dist .env.test   # fill in once
+tests/create_test_order.sh    # seed an order
+tests/api_test.sh             # run the full HTTP suite
+```
+
+### Continuous Integration
+
+GitHub Actions runs the PHPUnit suite on every PR and on every push to `main` (matrix: PHP 8.2 / 8.3 / 8.4). See `.github/workflows/ci.yml`.
 
 ### After code changes
 
@@ -251,7 +264,7 @@ rm -rf /var/www/shopware/var/cache/*
 | **3 (done)** | `PATCH /v1/orders/{id}`, `DELETE /v1/orders/{id}` (soft cancel), Delivery sub-resource (list, get, create-split, patch tracking, status transition) — line-item allocation (`positions`) and richer PATCH fields remain for a follow-up |
 | **4** | Read projection fed by Shopware business events — decouple read traffic from Shopware DB |
 | **4b** | **ERP integration (primary integration)** — outbound `order.created` webhook to ERP, inbound batched `POST /shipment-events` for FFP-driven shipment status & tracking (see `docs/order-api-concept.md` §7a) |
-| **5** | Dedicated auth (API key / mTLS), ACL role-based scopes, idempotency store, rate limiting, PHPUnit test suite, GitHub Actions CI |
+| **5 (in progress)** | PHPUnit test suite + GitHub Actions CI (**done**). Dedicated auth (API key / mTLS), ACL role-based scopes, idempotency store, rate limiting — open. |
 
 ---
 

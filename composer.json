@@ -4,18 +4,36 @@
     "type": "shopware-platform-plugin",
     "license": "proprietary",
     "require": {
+        "php": "^8.2",
         "shopware/core": "~6.6.0 || ~6.7.0"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.5 || ^11.0"
     },
     "autoload": {
         "psr-4": {
             "Scotty42\\OrderIntegration\\": "src/Plugin/OrderIntegration/"
         }
     },
+    "autoload-dev": {
+        "psr-4": {
+            "Scotty42\\OrderIntegration\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "phpunit",
+        "test:unit": "phpunit --testsuite=Unit"
+    },
     "extra": {
         "shopware-plugin-class": "Scotty42\\OrderIntegration\\OrderIntegrationPlugin",
         "label": {
             "de-DE": "Order Integration API",
             "en-GB": "Order Integration API"
+        }
+    },
+    "config": {
+        "allow-plugins": {
+            "symfony/runtime": true
         }
     }
 }
