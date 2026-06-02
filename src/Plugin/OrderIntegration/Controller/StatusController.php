@@ -4,6 +4,7 @@ namespace Scotty42\OrderIntegration\Controller;
 
 use Scotty42\OrderIntegration\Exception\OrderNotFoundException;
 use Scotty42\OrderIntegration\Exception\ValidationException;
+use Scotty42\OrderIntegration\Http\EtagComparator;
 use Scotty42\OrderIntegration\Service\IdempotencyService;
 use Scotty42\OrderIntegration\Service\OrderMapper;
 use Scotty42\OrderIntegration\Service\StateMachineService;
@@ -20,6 +21,7 @@ use Symfony\Component\Routing\Attribute\Route;
 #[Route(defaults: ['_routeScope' => ['api']])]
 class StatusController extends AbstractController
 {
+    use EnforcesIfMatch;
     use HandlesIdempotency;
 
     public function __construct(
@@ -27,11 +29,17 @@ class StatusController extends AbstractController
         private readonly StateMachineService $stateMachineService,
         private readonly OrderMapper $orderMapper,
         private readonly IdempotencyService $idempotency,
+        private readonly EtagComparator $etagComparator,
     ) {}
 
     protected function getIdempotencyService(): IdempotencyService
     {
         return $this->idempotency;
+    }
+
+    protected function getEtagComparator(): EtagComparator
+    {
+        return $this->etagComparator;
     }
 
     #[Route(
@@ -42,7 +50,8 @@ class StatusController extends AbstractController
     public function setOrderStatus(string $orderId, Request $request, Context $context): JsonResponse
     {
         return $this->withIdempotency($request, function () use ($orderId, $request, $context): JsonResponse {
-            $this->assertOrderExists($orderId, $context);
+            $order = $this->loadOrderOrFail($orderId, $context);
+            $this->assertIfMatch($request, $this->orderMapper->etagFor($order));
             $targetStatus = $this->getRequiredField($request, 'status');
 
             $this->stateMachineService->transitionOrder($orderId, $targetStatus, $context);
@@ -60,6 +69,7 @@ class StatusController extends AbstractController
     {
         return $this->withIdempotency($request, function () use ($orderId, $request, $context): JsonResponse {
             $order = $this->loadOrderOrFail($orderId, $context);
+            $this->assertIfMatch($request, $this->orderMapper->etagFor($order));
 
             $transactions = $order->getTransactions();
             if ($transactions === null || $transactions->count() === 0) {
@@ -84,6 +94,7 @@ class StatusController extends AbstractController
     {
         return $this->withIdempotency($request, function () use ($orderId, $request, $context): JsonResponse {
             $order = $this->loadOrderOrFail($orderId, $context);
+            $this->assertIfMatch($request, $this->orderMapper->etagFor($order));
 
             $deliveries = $order->getDeliveries();
             if ($deliveries === null || $deliveries->count() === 0) {
@@ -97,16 +108,6 @@ class StatusController extends AbstractController
 
             return $this->respondWithOrder($orderId, $context);
         });
-    }
-
-    private function assertOrderExists(string $orderId, Context $context): void
-    {
-        $criteria = new Criteria([$orderId]);
-        $order = $this->orderRepository->search($criteria, $context)->first();
-
-        if ($order === null) {
-            throw new OrderNotFoundException($orderId);
-        }
     }
 
     private function loadOrderOrFail(string $orderId, Context $context): OrderEntity

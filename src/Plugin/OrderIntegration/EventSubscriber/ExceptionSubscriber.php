@@ -6,6 +6,8 @@ use Scotty42\OrderIntegration\Exception\IdempotencyConflictException;
 use Scotty42\OrderIntegration\Exception\InvalidTransitionException;
 use Scotty42\OrderIntegration\Exception\MissingIdempotencyKeyException;
 use Scotty42\OrderIntegration\Exception\OrderNotFoundException;
+use Scotty42\OrderIntegration\Exception\PreconditionFailedException;
+use Scotty42\OrderIntegration\Exception\PreconditionRequiredException;
 use Scotty42\OrderIntegration\Exception\ValidationException;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -36,7 +38,9 @@ class ExceptionSubscriber implements EventSubscriberInterface
             || $exception instanceof ValidationException
             || $exception instanceof InvalidTransitionException
             || $exception instanceof IdempotencyConflictException
-            || $exception instanceof MissingIdempotencyKeyException;
+            || $exception instanceof MissingIdempotencyKeyException
+            || $exception instanceof PreconditionFailedException
+            || $exception instanceof PreconditionRequiredException;
 
         if (!$handled) {
             return;

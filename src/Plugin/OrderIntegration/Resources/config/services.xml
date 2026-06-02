@@ -12,6 +12,7 @@
             <argument type="service" id="Scotty42\OrderIntegration\Service\OrderMapper"/>
             <argument type="service" id="Scotty42\OrderIntegration\Service\StateMachineService"/>
             <argument type="service" id="Scotty42\OrderIntegration\Service\IdempotencyService"/>
+            <argument type="service" id="Scotty42\OrderIntegration\Http\EtagComparator"/>
             <tag name="controller.service_arguments"/>
             <call method="setContainer">
                 <argument type="service" id="service_container"/>
@@ -23,6 +24,7 @@
             <argument type="service" id="Scotty42\OrderIntegration\Service\StateMachineService"/>
             <argument type="service" id="Scotty42\OrderIntegration\Service\OrderMapper"/>
             <argument type="service" id="Scotty42\OrderIntegration\Service\IdempotencyService"/>
+            <argument type="service" id="Scotty42\OrderIntegration\Http\EtagComparator"/>
             <tag name="controller.service_arguments"/>
             <call method="setContainer">
                 <argument type="service" id="service_container"/>
@@ -42,6 +44,8 @@
                 <argument type="service" id="service_container"/>
             </call>
         </service>
+
+        <service id="Scotty42\OrderIntegration\Http\EtagComparator"/>
 
         <service id="Scotty42\OrderIntegration\Service\OrderMapper"/>
 

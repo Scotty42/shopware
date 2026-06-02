@@ -4,6 +4,7 @@ namespace Scotty42\OrderIntegration\Controller;
 
 use Scotty42\OrderIntegration\Exception\OrderNotFoundException;
 use Scotty42\OrderIntegration\Exception\ValidationException;
+use Scotty42\OrderIntegration\Http\EtagComparator;
 use Scotty42\OrderIntegration\Service\IdempotencyService;
 use Scotty42\OrderIntegration\Service\OrderCreationService;
 use Scotty42\OrderIntegration\Service\OrderMapper;
@@ -29,6 +30,7 @@ use Symfony\Component\Routing\Attribute\Route;
 #[Route(defaults: ['_routeScope' => ['api']])]
 class OrderController extends AbstractController
 {
+    use EnforcesIfMatch;
     use HandlesIdempotency;
 
     public function __construct(
@@ -40,11 +42,17 @@ class OrderController extends AbstractController
         private readonly OrderMapper $orderMapper,
         private readonly StateMachineService $stateMachineService,
         private readonly IdempotencyService $idempotency,
+        private readonly EtagComparator $etagComparator,
     ) {}
 
     protected function getIdempotencyService(): IdempotencyService
     {
         return $this->idempotency;
+    }
+
+    protected function getEtagComparator(): EtagComparator
+    {
+        return $this->etagComparator;
     }
 
     #[Route(
@@ -197,7 +205,8 @@ class OrderController extends AbstractController
     public function patch(string $orderId, Request $request, Context $context): JsonResponse
     {
         return $this->withIdempotency($request, function () use ($orderId, $request, $context): JsonResponse {
-            $this->findOrder($orderId, $context); // assert exists
+            $order = $this->findOrder($orderId, $context); // assert exists
+            $this->assertIfMatch($request, $this->orderMapper->etagFor($order));
 
             $data = json_decode($request->getContent(), true) ?? [];
 
@@ -231,6 +240,7 @@ class OrderController extends AbstractController
     {
         return $this->withIdempotency($request, function () use ($orderId, $request, $context): JsonResponse {
             $order = $this->findOrder($orderId, $context);
+            $this->assertIfMatch($request, $this->orderMapper->etagFor($order));
 
             $hard = $request->query->getBoolean('hard', false);
 
