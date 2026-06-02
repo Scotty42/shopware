@@ -184,4 +184,58 @@ final class QueryValidatorTest extends TestCase
             $this->assertCount(3, $e->getValidationErrors());
         }
     }
+
+    #[DataProvider('validSortProvider')]
+    public function testAcceptsValidSort(string $sort): void
+    {
+        $this->validator->validateListParams(['sort' => $sort]);
+        $this->expectNotToPerformAssertions();
+    }
+
+    public static function validSortProvider(): array
+    {
+        return [
+            ['createdAt:asc'],
+            ['createdAt:desc'],
+            ['updatedAt:asc'],
+            ['updatedAt:desc'],
+            ['orderNumber:asc'],
+            ['orderNumber:desc'],
+        ];
+    }
+
+    #[DataProvider('invalidSortProvider')]
+    public function testRejectsInvalidSort(string $sort): void
+    {
+        try {
+            $this->validator->validateListParams(['sort' => $sort]);
+            $this->fail('Expected ValidationException for sort=' . $sort);
+        } catch (ValidationException $e) {
+            $this->assertSame('/sort', $e->getValidationErrors()[0]['pointer']);
+            $this->assertSame('invalid_sort', $e->getValidationErrors()[0]['code']);
+        }
+    }
+
+    public static function invalidSortProvider(): array
+    {
+        return [
+            'unknown field'     => ['total:asc'],
+            'bad direction'     => ['createdAt:up'],
+            'missing direction' => ['createdAt'],
+            'empty'             => [''],
+            'sql-ish'           => ['createdAt; DROP'],
+        ];
+    }
+
+    public function testAcceptsKeysetCursorShape(): void
+    {
+        $cursor = base64_encode(json_encode([
+            'field' => 'orderNumber',
+            'value' => '10001',
+            'id'    => str_repeat('c', 32),
+            'dir'   => 'desc',
+        ]));
+        $this->validator->validateListParams(['cursor' => $cursor]);
+        $this->expectNotToPerformAssertions();
+    }
 }
