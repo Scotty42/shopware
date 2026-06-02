@@ -11,6 +11,7 @@
             <argument type="service" id="Scotty42\OrderIntegration\Service\OrderPatchService"/>
             <argument type="service" id="Scotty42\OrderIntegration\Service\OrderMapper"/>
             <argument type="service" id="Scotty42\OrderIntegration\Service\StateMachineService"/>
+            <argument type="service" id="Scotty42\OrderIntegration\Service\IdempotencyService"/>
             <tag name="controller.service_arguments"/>
             <call method="setContainer">
                 <argument type="service" id="service_container"/>
@@ -21,6 +22,7 @@
             <argument type="service" id="order.repository"/>
             <argument type="service" id="Scotty42\OrderIntegration\Service\StateMachineService"/>
             <argument type="service" id="Scotty42\OrderIntegration\Service\OrderMapper"/>
+            <argument type="service" id="Scotty42\OrderIntegration\Service\IdempotencyService"/>
             <tag name="controller.service_arguments"/>
             <call method="setContainer">
                 <argument type="service" id="service_container"/>
@@ -53,6 +55,14 @@
             <argument type="service" id="order.repository"/>
             <argument type="service" id="order_address.repository"/>
             <argument type="service" id="tag.repository"/>
+        </service>
+
+        <service id="Scotty42\OrderIntegration\Idempotency\Psr6IdempotencyStore">
+            <argument type="service" id="cache.app"/>
+        </service>
+
+        <service id="Scotty42\OrderIntegration\Service\IdempotencyService">
+            <argument type="service" id="Scotty42\OrderIntegration\Idempotency\Psr6IdempotencyStore"/>
         </service>
 
         <service id="Scotty42\OrderIntegration\Service\StateMachineService">
