@@ -79,7 +79,7 @@ Shopware reserves `/api/integration/...` for its own integration entity. The plu
 
 ### Authentication
 
-Two auth methods are supported, both via Shopware's OAuth2 token endpoint (`/api/oauth/token`):
+Phase 1 uses **Shopware OAuth 2.0** at `/api/oauth/token` (the `shopwareOAuth2` security scheme in `docs/order-api-openapi.yaml`). Two grant types are supported:
 
 **1. Password Grant (development/admin use)**
 ```bash
@@ -97,6 +97,8 @@ curl -X POST /api/oauth/token \
 ```
 
 Plugin routes are registered in the `api` route scope — Shopware validates the Bearer token on every request. No valid token → `401 Unauthorized`.
+
+Phase 5 introduces the dedicated mTLS + OAuth 2.0 client-credentials + API-key set documented in the OpenAPI spec; that auth path runs behind an API gateway and is not implemented in Phase 1.
 
 ---
 
@@ -218,12 +220,15 @@ cp .env.test.dist .env.test
 ### Run tests
 
 ```bash
-# Full test suite (55 assertions)
+# Bash-based integration suite — requires a live Shopware backend.
+# Number of assertions grows with each PR; check the script header.
 tests/api_test.sh
 
 # Create a test order via Store API
 tests/create_test_order.sh
 ```
+
+A PHPUnit suite for the mappers, validators, and state-machine wrapper is planned (see Roadmap, Phase 5).
 
 ### After code changes
 
@@ -237,15 +242,16 @@ rm -rf /var/www/shopware/var/cache/*
 
 ---
 
-## Roadmap
+> **Two roadmaps, two axes.** This table tracks **endpoint coverage**. The infra/load axis (sync plugin → read projection → write queue) is tracked in `docs/order-api-concept.md` §2, Option C. README Phase 4 ↔ concept Phase 2 (reads); README Phase 5 ↔ concept Phase 3 (writes) + dedicated auth.
 
 | Phase | Description |
 |---|---|
-| **1 (done)** | Plugin skeleton, `GET /v1/orders` + `GET /v1/orders/{id}`, cursor pagination, filters, RFC 9457 errors, OAuth2 password + client credentials, QueryValidator |
-| **2 (done)** | `PUT` status transitions (order, payment, delivery), `POST /v1/orders` via CartService + OrderPersister, OrderMapper, ETag headers |
-| **3 (done)** | `PATCH /v1/orders/{id}`, `DELETE /v1/orders/{id}` (soft cancel), full Delivery sub-resource incl. split shipment — 55/55 tests |
+| **1 (done)** | Plugin skeleton, `GET /v1/orders` + `GET /v1/orders/{id}`, cursor pagination, filters, RFC 9457 errors, Shopware OAuth 2.0 (password + client credentials), QueryValidator |
+| **2 (done)** | `PUT` status transitions (order, payment, delivery), `POST /v1/orders` via CartService + OrderPersister, OrderMapper, `Location` + `ETag` headers, full spec-compliant `Order` shape |
+| **3 (done)** | `PATCH /v1/orders/{id}`, `DELETE /v1/orders/{id}` (soft cancel), Delivery sub-resource (list, get, create-split, patch tracking, status transition) — line-item allocation (`positions`) and richer PATCH fields remain for a follow-up |
 | **4** | Read projection fed by Shopware business events — decouple read traffic from Shopware DB |
-| **5** | Dedicated auth (API key / mTLS), ACL role-based scopes, idempotency store, rate limiting |
+| **4b** | **ERP integration (primary integration)** — outbound `order.created` webhook to ERP, inbound batched `POST /shipment-events` for FFP-driven shipment status & tracking (see `docs/order-api-concept.md` §7a) |
+| **5** | Dedicated auth (API key / mTLS), ACL role-based scopes, idempotency store, rate limiting, PHPUnit test suite, GitHub Actions CI |
 
 ---
 
