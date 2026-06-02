@@ -139,7 +139,7 @@ STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
 assert_status "GET /v1/orders with client credentials returns 200" "200" "$STATUS"
 # Create fresh order for transition tests
 CUSTOMER_ID=$(curl -s "$SHOPWARE_URL/api/customer?limit=1" -H "Authorization: Bearer $TOKEN" | python3 -c "import sys,json; print(json.load(sys.stdin)['data'][0]['id'])")
-TRANSITION_ORDER_ID=$(curl -s -X POST "$SHOPWARE_URL/api/order-integration/v1/orders" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "{\"salesChannelId\": \"019e77e0f8b671b2b429714572d63709\", \"customer\": {\"id\": \"$CUSTOMER_ID\"}, \"lineItems\": [{\"productId\": \"11dc680240b04f469ccba354cbf0b967\", \"quantity\": 1}]}" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+TRANSITION_ORDER_ID=$(curl -s -X POST "$SHOPWARE_URL/api/order-integration/v1/orders" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "{\"salesChannelId\": \"$SHOPWARE_SALES_CHANNEL_ID\", \"customer\": {\"id\": \"$CUSTOMER_ID\"}, \"lineItems\": [{\"productId\": \"$SHOPWARE_TEST_PRODUCT_ID\", \"quantity\": 1}]}" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
 
 
 # Status transitions
@@ -206,9 +206,9 @@ NEW_ORDER=$(curl -s -X POST "$SHOPWARE_URL/api/order-integration/v1/orders" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d "{
-    \"salesChannelId\": \"019e77e0f8b671b2b429714572d63709\",
+    \"salesChannelId\": \"$SHOPWARE_SALES_CHANNEL_ID\",
     \"customer\": {\"id\": \"$CUSTOMER_ID\"},
-    \"lineItems\": [{\"productId\": \"11dc680240b04f469ccba354cbf0b967\", \"quantity\": 1}]
+    \"lineItems\": [{\"productId\": \"$SHOPWARE_TEST_PRODUCT_ID\", \"quantity\": 1}]
   }")
 
 NEW_ORDER_ID=$(echo "$NEW_ORDER" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
@@ -224,7 +224,7 @@ fi
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"lineItems": [{"productId": "11dc680240b04f469ccba354cbf0b967", "quantity": 1}]}' \
+  -d '{"lineItems": [{"productId": "$SHOPWARE_TEST_PRODUCT_ID", "quantity": 1}]}' \
   "$SHOPWARE_URL/api/order-integration/v1/orders")
 assert_status "POST /v1/orders missing salesChannelId returns 422" "422" "$STATUS"
 
@@ -232,7 +232,7 @@ assert_status "POST /v1/orders missing salesChannelId returns 422" "422" "$STATU
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"salesChannelId": "019e77e0f8b671b2b429714572d63709"}' \
+  -d '{"salesChannelId": "$SHOPWARE_SALES_CHANNEL_ID"}' \
   "$SHOPWARE_URL/api/order-integration/v1/orders")
 assert_status "POST /v1/orders missing lineItems returns 422" "422" "$STATUS"
 
@@ -342,6 +342,13 @@ fi
 
 echo ""
 
+# Create order for PATCH tests
+PATCH_ORDER_ID=$(curl -s -X POST "$SHOPWARE_URL/api/order-integration/v1/orders" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"salesChannelId\": \"$SHOPWARE_SALES_CHANNEL_ID\", \"customer\": {\"id\": \"$CUSTOMER_ID\"}, \"lineItems\": [{\"productId\": \"$SHOPWARE_TEST_PRODUCT_ID\", \"quantity\": 1}]}" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+
 # PATCH /v1/orders/{id}
 PATCH_RESPONSE=$(curl -s -X PATCH \
   -H "Authorization: Bearer $TOKEN" \
@@ -366,11 +373,37 @@ STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH \
   "$SHOPWARE_URL/api/order-integration/v1/orders/b878ba70bf7d47a12ae61ad5b1dc8582")
 assert_status "PATCH /v1/orders/{id} unknown id returns 404" "404" "$STATUS"
 
+# Delivery sub-resource tests
+DELIVERY_TEST_ORDER=$(curl -s -X POST "$SHOPWARE_URL/api/order-integration/v1/orders" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"salesChannelId\": \"$SHOPWARE_SALES_CHANNEL_ID\", \"customer\": {\"id\": \"$CUSTOMER_ID\"}, \"lineItems\": [{\"productId\": \"$SHOPWARE_TEST_PRODUCT_ID\", \"quantity\": 1}]}")
+DELIVERY_ORDER_ID=$(echo "$DELIVERY_TEST_ORDER" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+DELIVERY_ID=$(echo "$DELIVERY_TEST_ORDER" | python3 -c "import sys,json; print(json.load(sys.stdin)['deliveries'][0]['id'])")
+
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+  -H "Authorization: Bearer $TOKEN" \
+  "$SHOPWARE_URL/api/order-integration/v1/orders/$DELIVERY_ORDER_ID/deliveries")
+assert_status "GET /v1/orders/{id}/deliveries returns 200" "200" "$STATUS"
+
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+  -H "Authorization: Bearer $TOKEN" \
+  "$SHOPWARE_URL/api/order-integration/v1/orders/$DELIVERY_ORDER_ID/deliveries/$DELIVERY_ID")
+assert_status "GET /v1/orders/{id}/deliveries/{id} returns 200" "200" "$STATUS"
+
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"status": "shipped"}' \
+  "$SHOPWARE_URL/api/order-integration/v1/orders/$DELIVERY_ORDER_ID/deliveries/$DELIVERY_ID/status")
+assert_status "PUT /v1/orders/{id}/deliveries/{id}/status returns 200" "200" "$STATUS"
+
+
 # DELETE /v1/orders/{id} — soft cancel
 DELETE_ORDER_ID=$(curl -s -X POST "$SHOPWARE_URL/api/order-integration/v1/orders" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d "{\"salesChannelId\": \"019e77e0f8b671b2b429714572d63709\", \"customer\": {\"id\": \"$CUSTOMER_ID\"}, \"lineItems\": [{\"productId\": \"11dc680240b04f469ccba354cbf0b967\", \"quantity\": 1}]}" \
+  -d "{\"salesChannelId\": \"$SHOPWARE_SALES_CHANNEL_ID\", \"customer\": {\"id\": \"$CUSTOMER_ID\"}, \"lineItems\": [{\"productId\": \"$SHOPWARE_TEST_PRODUCT_ID\", \"quantity\": 1}]}" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
 
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
