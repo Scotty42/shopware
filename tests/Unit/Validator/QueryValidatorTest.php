@@ -184,4 +184,33 @@ final class QueryValidatorTest extends TestCase
             $this->assertCount(3, $e->getValidationErrors());
         }
     }
+
+    public function testAcceptsCustomerIdAsCanonicalUuid(): void
+    {
+        $this->validator->validateListParams(['customerId' => 'f47ac10b-58cc-4372-a567-0e02b2c3d479']);
+        $this->expectNotToPerformAssertions();
+    }
+
+    public function testRejectsGarbageCustomerId(): void
+    {
+        try {
+            $this->validator->validateListParams(['customerId' => 'not-an-id']);
+            $this->fail('Expected ValidationException');
+        } catch (ValidationException $e) {
+            $this->assertSame('invalid_customer_id', $e->getValidationErrors()[0]['code']);
+        }
+    }
+
+    public function testNormalizeIdStripsDashesAndLowercases(): void
+    {
+        self::assertSame(
+            'f47ac10b58cc4372a5670e02b2c3d479',
+            QueryValidator::normalizeId('F47AC10B-58CC-4372-A567-0E02B2C3D479')
+        );
+        // hex input is returned unchanged (already normalized)
+        self::assertSame(
+            '0123456789abcdef0123456789abcdef',
+            QueryValidator::normalizeId('0123456789abcdef0123456789abcdef')
+        );
+    }
 }

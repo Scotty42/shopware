@@ -57,7 +57,10 @@ class OrderController extends AbstractController
             $criteria->addFilter(new EqualsFilter('stateMachineState.technicalName', $status));
         }
         if ($customerId = $request->query->get('customerId')) {
-            $criteria->addFilter(new EqualsFilter('orderCustomer.customerId', $customerId));
+            $criteria->addFilter(new EqualsFilter(
+                'orderCustomer.customerId',
+                \Scotty42\OrderIntegration\Validator\QueryValidator::normalizeId($customerId)
+            ));
         }
         if ($createdAfter = $request->query->get('createdAfter')) {
             $criteria->addFilter(new RangeFilter('createdAt', [RangeFilter::GTE => $createdAfter]));
