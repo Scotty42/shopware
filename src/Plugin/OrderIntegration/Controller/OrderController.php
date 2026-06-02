@@ -4,6 +4,7 @@ namespace Scotty42\OrderIntegration\Controller;
 
 use Scotty42\OrderIntegration\Exception\OrderNotFoundException;
 use Scotty42\OrderIntegration\Exception\ValidationException;
+use Scotty42\OrderIntegration\Http\EtagComparator;
 use Scotty42\OrderIntegration\Service\OrderCreationService;
 use Scotty42\OrderIntegration\Service\OrderMapper;
 use Scotty42\OrderIntegration\Service\OrderPatchService;
@@ -27,6 +28,8 @@ use Symfony\Component\Routing\Attribute\Route;
 #[Route(defaults: ['_routeScope' => ['api']])]
 class OrderController extends AbstractController
 {
+    use EnforcesIfMatch;
+
     public function __construct(
         private readonly EntityRepository $orderRepository,
         private readonly QueryValidator $queryValidator,
@@ -34,7 +37,13 @@ class OrderController extends AbstractController
         private readonly OrderPatchService $orderPatchService,
         private readonly OrderMapper $orderMapper,
         private readonly StateMachineService $stateMachineService,
+        private readonly EtagComparator $etagComparator,
     ) {}
+
+    protected function getEtagComparator(): EtagComparator
+    {
+        return $this->etagComparator;
+    }
 
     #[Route(
         path: '/api/order-integration/v1/orders',
@@ -168,7 +177,8 @@ class OrderController extends AbstractController
     )]
     public function patch(string $orderId, Request $request, Context $context): JsonResponse
     {
-        $this->findOrder($orderId, $context); // assert exists
+        $order = $this->findOrder($orderId, $context); // assert exists
+        $this->assertIfMatch($request, $this->orderMapper->etagFor($order));
 
         $data = json_decode($request->getContent(), true) ?? [];
 
@@ -199,7 +209,8 @@ class OrderController extends AbstractController
     )]
     public function delete(string $orderId, Request $request, Context $context): JsonResponse
     {
-        $this->findOrder($orderId, $context);
+        $order = $this->findOrder($orderId, $context);
+        $this->assertIfMatch($request, $this->orderMapper->etagFor($order));
 
         $hard = $request->query->getBoolean('hard', false);
 
