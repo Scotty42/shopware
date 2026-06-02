@@ -65,13 +65,20 @@ No breaking changes were identified between 6.6.10 and 6.7.x for the services us
 
 ### Why a plugin instead of a standalone facade
 
-Three options were evaluated (see `docs/order-api-concept.md` and `docs/spike-order-creation.md`):
+Four options were evaluated (see `docs/order-api-concept.md` and `docs/spike-order-creation.md`):
 
 | Option | Description | Decision |
 |---|---|---|
 | **A** | Callers hit the Shopware Admin API directly | Rejected — tight coupling, not suitable for D2C load |
-| **B** | Standalone facade service in front of the Admin API | Viable for low volume; becomes Option C over time |
-| **C** | Plugin inside Shopware using internal services | **Chosen** — lowest latency, no extra hop, uses Shopware's own pricing/checkout code |
+| **B** | Standalone facade service in front of the Admin API | Viable for low volume; first step toward Option C |
+| **C** | Standalone facade **+ read projection (CQRS) + write queue** (the load-aware variant in `docs/order-api-concept.md` §2) | Target infra/load architecture — not yet built; tracked on the infra axis (README Phase 4/5 ↔ concept Phase 2/3) |
+| **D** | **Plugin inside Shopware** using internal services (this repo) | **Chosen for the endpoint layer** — lowest latency, no extra hop, uses Shopware's own pricing/checkout code |
+
+> **Note on naming.** Earlier revisions of this README labelled the plugin
+> "Option C", which collided with Option C in `docs/order-api-concept.md`
+> (the facade + CQRS + queue variant). They are different things: the plugin
+> (Option **D**) is the *endpoint* implementation; concept Option **C** is the
+> *infra/load* evolution. The two are orthogonal axes and can coexist.
 
 ### Route namespace
 
