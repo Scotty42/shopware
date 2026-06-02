@@ -366,6 +366,33 @@ STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH \
   "$SHOPWARE_URL/api/order-integration/v1/orders/b878ba70bf7d47a12ae61ad5b1dc8582")
 assert_status "PATCH /v1/orders/{id} unknown id returns 404" "404" "$STATUS"
 
+# DELETE /v1/orders/{id} — soft cancel
+DELETE_ORDER_ID=$(curl -s -X POST "$SHOPWARE_URL/api/order-integration/v1/orders" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"salesChannelId\": \"019e77e0f8b671b2b429714572d63709\", \"customer\": {\"id\": \"$CUSTOMER_ID\"}, \"lineItems\": [{\"productId\": \"11dc680240b04f469ccba354cbf0b967\", \"quantity\": 1}]}" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+  -H "Authorization: Bearer $TOKEN" \
+  "$SHOPWARE_URL/api/order-integration/v1/orders/$DELETE_ORDER_ID")
+assert_status "DELETE /v1/orders/{id} returns 204" "204" "$STATUS"
+
+CANCELLED_STATUS=$(curl -s -H "Authorization: Bearer $TOKEN" \
+  "$SHOPWARE_URL/api/order-integration/v1/orders/$DELETE_ORDER_ID" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+assert_eq "DELETE /v1/orders/{id} sets status to cancelled" "cancelled" "$CANCELLED_STATUS"
+
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+  -H "Authorization: Bearer $TOKEN" \
+  "$SHOPWARE_URL/api/order-integration/v1/orders/b878ba70bf7d47a12ae61ad5b1dc8582")
+assert_status "DELETE /v1/orders/{id} unknown id returns 404" "404" "$STATUS"
+
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+  -H "Authorization: Bearer $TOKEN" \
+  "$SHOPWARE_URL/api/order-integration/v1/orders/$DELETE_ORDER_ID?hard=true")
+assert_status "DELETE /v1/orders/{id}?hard=true returns 403" "403" "$STATUS"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1

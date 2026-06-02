@@ -5,7 +5,9 @@ namespace Scotty42\OrderIntegration\Controller;
 use Scotty42\OrderIntegration\Exception\OrderNotFoundException;
 use Scotty42\OrderIntegration\Service\OrderCreationService;
 use Scotty42\OrderIntegration\Service\OrderMapper;
+use Scotty42\OrderIntegration\Exception\InvalidTransitionException;
 use Scotty42\OrderIntegration\Service\OrderPatchService;
+use Scotty42\OrderIntegration\Service\StateMachineService;
 use Scotty42\OrderIntegration\Validator\QueryValidator;
 use Shopware\Core\Framework\Context;
 use Shopware\Core\Framework\DataAbstractionLayer\EntityRepository;
@@ -45,6 +47,7 @@ class OrderController extends AbstractController
         private readonly OrderCreationService $orderCreationService,
         private readonly OrderPatchService $orderPatchService,
         private readonly OrderMapper $orderMapper,
+        private readonly StateMachineService $stateMachineService,
     ) {}
 
     #[Route(
@@ -182,6 +185,38 @@ class OrderController extends AbstractController
             Response::HTTP_OK,
             ['ETag' => $this->orderMapper->etagFor($order)]
         );
+    }
+
+
+    #[Route(
+        path: '/api/order-integration/v1/orders/{orderId}',
+        name: 'api.order-integration.orders.delete',
+        methods: ['DELETE']
+    )]
+    public function delete(string $orderId, Request $request, Context $context): JsonResponse
+    {
+        $this->findOrder($orderId, $context);
+
+        $hard = $request->query->getBoolean('hard', false);
+
+        if ($hard) {
+            return new JsonResponse([
+                'type'   => 'about:blank',
+                'title'  => 'Forbidden',
+                'status' => 403,
+                'detail' => 'Hard delete requires scope orders:hard_delete. Not yet implemented.',
+                'code'   => 'order.hard_delete_not_permitted',
+            ], Response::HTTP_FORBIDDEN);
+        }
+
+        // Soft delete: transition to cancelled
+        try {
+            $this->stateMachineService->transitionOrder($orderId, 'cancelled', $context);
+        } catch (\Scotty42\OrderIntegration\Exception\InvalidTransitionException $e) {
+            // Already cancelled — idempotent, treat as success
+        }
+
+        return new JsonResponse(null, Response::HTTP_NO_CONTENT);
     }
 
     private function findOrder(string $orderId, Context $context)
