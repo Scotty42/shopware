@@ -4,6 +4,7 @@ namespace Scotty42\OrderIntegration\Controller;
 
 use Scotty42\OrderIntegration\Exception\OrderNotFoundException;
 use Scotty42\OrderIntegration\Exception\ValidationException;
+use Scotty42\OrderIntegration\Service\IdempotencyService;
 use Scotty42\OrderIntegration\Service\OrderCreationService;
 use Scotty42\OrderIntegration\Service\OrderMapper;
 use Scotty42\OrderIntegration\Service\OrderPatchService;
@@ -27,6 +28,8 @@ use Symfony\Component\Routing\Attribute\Route;
 #[Route(defaults: ['_routeScope' => ['api']])]
 class OrderController extends AbstractController
 {
+    use HandlesIdempotency;
+
     public function __construct(
         private readonly EntityRepository $orderRepository,
         private readonly QueryValidator $queryValidator,
@@ -34,7 +37,13 @@ class OrderController extends AbstractController
         private readonly OrderPatchService $orderPatchService,
         private readonly OrderMapper $orderMapper,
         private readonly StateMachineService $stateMachineService,
+        private readonly IdempotencyService $idempotency,
     ) {}
+
+    protected function getIdempotencyService(): IdempotencyService
+    {
+        return $this->idempotency;
+    }
 
     #[Route(
         path: '/api/order-integration/v1/orders',
@@ -113,36 +122,38 @@ class OrderController extends AbstractController
     )]
     public function create(Request $request, Context $context): JsonResponse
     {
-        $data = json_decode($request->getContent(), true);
+        return $this->withIdempotency($request, function () use ($request, $context): JsonResponse {
+            $data = json_decode($request->getContent(), true);
 
-        if (!is_array($data)) {
-            throw new ValidationException([
-                ['pointer' => '/', 'code' => 'invalid_json', 'message' => 'Request body must be a JSON object.'],
-            ]);
-        }
+            if (!is_array($data)) {
+                throw new ValidationException([
+                    ['pointer' => '/', 'code' => 'invalid_json', 'message' => 'Request body must be a JSON object.'],
+                ]);
+            }
 
-        $errors = [];
-        if (empty($data['salesChannelId'])) {
-            $errors[] = ['pointer' => '/salesChannelId', 'code' => 'required', 'message' => 'salesChannelId is required'];
-        }
-        if (empty($data['lineItems'])) {
-            $errors[] = ['pointer' => '/lineItems', 'code' => 'required', 'message' => 'lineItems must not be empty'];
-        }
-        if (!empty($errors)) {
-            throw new ValidationException($errors);
-        }
+            $errors = [];
+            if (empty($data['salesChannelId'])) {
+                $errors[] = ['pointer' => '/salesChannelId', 'code' => 'required', 'message' => 'salesChannelId is required'];
+            }
+            if (empty($data['lineItems'])) {
+                $errors[] = ['pointer' => '/lineItems', 'code' => 'required', 'message' => 'lineItems must not be empty'];
+            }
+            if (!empty($errors)) {
+                throw new ValidationException($errors);
+            }
 
-        $orderId = $this->orderCreationService->createOrder($data, $context);
-        $order = $this->findOrder($orderId, $context);
+            $orderId = $this->orderCreationService->createOrder($data, $context);
+            $order = $this->findOrder($orderId, $context);
 
-        return new JsonResponse(
-            $this->orderMapper->mapOrder($order),
-            Response::HTTP_CREATED,
-            [
-                'Location' => sprintf('/api/order-integration/v1/orders/%s', $orderId),
-                'ETag'     => $this->orderMapper->etagFor($order),
-            ]
-        );
+            return new JsonResponse(
+                $this->orderMapper->mapOrder($order),
+                Response::HTTP_CREATED,
+                [
+                    'Location' => sprintf('/api/order-integration/v1/orders/%s', $orderId),
+                    'ETag'     => $this->orderMapper->etagFor($order),
+                ]
+            );
+        });
     }
 
     #[Route(
@@ -168,28 +179,30 @@ class OrderController extends AbstractController
     )]
     public function patch(string $orderId, Request $request, Context $context): JsonResponse
     {
-        $this->findOrder($orderId, $context); // assert exists
+        return $this->withIdempotency($request, function () use ($orderId, $request, $context): JsonResponse {
+            $this->findOrder($orderId, $context); // assert exists
 
-        $data = json_decode($request->getContent(), true) ?? [];
+            $data = json_decode($request->getContent(), true) ?? [];
 
-        $allowed = ['customerComment', 'customFields', 'tags', 'billingAddress', 'shippingAddress'];
-        $data = array_intersect_key($data, array_flip($allowed));
+            $allowed = ['customerComment', 'customFields', 'tags', 'billingAddress', 'shippingAddress'];
+            $data = array_intersect_key($data, array_flip($allowed));
 
-        if (empty($data)) {
-            throw new ValidationException([
-                ['pointer' => '/', 'code' => 'no_mutable_fields', 'message' => 'No mutable fields provided.'],
-            ]);
-        }
+            if (empty($data)) {
+                throw new ValidationException([
+                    ['pointer' => '/', 'code' => 'no_mutable_fields', 'message' => 'No mutable fields provided.'],
+                ]);
+            }
 
-        $this->orderPatchService->patch($orderId, $data, $context);
+            $this->orderPatchService->patch($orderId, $data, $context);
 
-        $order = $this->findOrder($orderId, $context);
+            $order = $this->findOrder($orderId, $context);
 
-        return new JsonResponse(
-            $this->orderMapper->mapOrder($order),
-            Response::HTTP_OK,
-            ['ETag' => $this->orderMapper->etagFor($order)]
-        );
+            return new JsonResponse(
+                $this->orderMapper->mapOrder($order),
+                Response::HTTP_OK,
+                ['ETag' => $this->orderMapper->etagFor($order)]
+            );
+        });
     }
 
     #[Route(
@@ -199,29 +212,31 @@ class OrderController extends AbstractController
     )]
     public function delete(string $orderId, Request $request, Context $context): JsonResponse
     {
-        $this->findOrder($orderId, $context);
+        return $this->withIdempotency($request, function () use ($orderId, $request, $context): JsonResponse {
+            $this->findOrder($orderId, $context);
 
-        $hard = $request->query->getBoolean('hard', false);
+            $hard = $request->query->getBoolean('hard', false);
 
-        if ($hard) {
-            return new JsonResponse([
-                'type'   => 'about:blank',
-                'title'  => 'Forbidden',
-                'status' => 403,
-                'detail' => 'Hard delete requires scope orders:hard_delete. Not yet implemented.',
-                'code'   => 'order.hard_delete_not_permitted',
-            ], Response::HTTP_FORBIDDEN, ['Content-Type' => 'application/problem+json']);
-        }
+            if ($hard) {
+                return new JsonResponse([
+                    'type'   => 'about:blank',
+                    'title'  => 'Forbidden',
+                    'status' => 403,
+                    'detail' => 'Hard delete requires scope orders:hard_delete. Not yet implemented.',
+                    'code'   => 'order.hard_delete_not_permitted',
+                ], Response::HTTP_FORBIDDEN, ['Content-Type' => 'application/problem+json']);
+            }
 
-        // Soft delete: transition to cancelled. If already cancelled, the
-        // state-machine will reject the transition — treat as idempotent.
-        try {
-            $this->stateMachineService->transitionOrder($orderId, 'cancelled', $context);
-        } catch (\Scotty42\OrderIntegration\Exception\InvalidTransitionException $e) {
-            // Already cancelled — idempotent success.
-        }
+            // Soft delete: transition to cancelled. If already cancelled, the
+            // state-machine will reject the transition — treat as idempotent.
+            try {
+                $this->stateMachineService->transitionOrder($orderId, 'cancelled', $context);
+            } catch (\Scotty42\OrderIntegration\Exception\InvalidTransitionException $e) {
+                // Already cancelled — idempotent success.
+            }
 
-        return new JsonResponse(null, Response::HTTP_NO_CONTENT);
+            return new JsonResponse(null, Response::HTTP_NO_CONTENT);
+        });
     }
 
     private function findOrder(string $orderId, Context $context): OrderEntity

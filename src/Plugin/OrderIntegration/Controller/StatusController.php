@@ -4,6 +4,7 @@ namespace Scotty42\OrderIntegration\Controller;
 
 use Scotty42\OrderIntegration\Exception\OrderNotFoundException;
 use Scotty42\OrderIntegration\Exception\ValidationException;
+use Scotty42\OrderIntegration\Service\IdempotencyService;
 use Scotty42\OrderIntegration\Service\OrderMapper;
 use Scotty42\OrderIntegration\Service\StateMachineService;
 use Shopware\Core\Checkout\Order\OrderEntity;
@@ -19,11 +20,19 @@ use Symfony\Component\Routing\Attribute\Route;
 #[Route(defaults: ['_routeScope' => ['api']])]
 class StatusController extends AbstractController
 {
+    use HandlesIdempotency;
+
     public function __construct(
         private readonly EntityRepository $orderRepository,
         private readonly StateMachineService $stateMachineService,
         private readonly OrderMapper $orderMapper,
+        private readonly IdempotencyService $idempotency,
     ) {}
+
+    protected function getIdempotencyService(): IdempotencyService
+    {
+        return $this->idempotency;
+    }
 
     #[Route(
         path: '/api/order-integration/v1/orders/{orderId}/status',
@@ -32,12 +41,14 @@ class StatusController extends AbstractController
     )]
     public function setOrderStatus(string $orderId, Request $request, Context $context): JsonResponse
     {
-        $this->assertOrderExists($orderId, $context);
-        $targetStatus = $this->getRequiredField($request, 'status');
+        return $this->withIdempotency($request, function () use ($orderId, $request, $context): JsonResponse {
+            $this->assertOrderExists($orderId, $context);
+            $targetStatus = $this->getRequiredField($request, 'status');
 
-        $this->stateMachineService->transitionOrder($orderId, $targetStatus, $context);
+            $this->stateMachineService->transitionOrder($orderId, $targetStatus, $context);
 
-        return $this->respondWithOrder($orderId, $context);
+            return $this->respondWithOrder($orderId, $context);
+        });
     }
 
     #[Route(
@@ -47,19 +58,21 @@ class StatusController extends AbstractController
     )]
     public function setPaymentStatus(string $orderId, Request $request, Context $context): JsonResponse
     {
-        $order = $this->loadOrderOrFail($orderId, $context);
+        return $this->withIdempotency($request, function () use ($orderId, $request, $context): JsonResponse {
+            $order = $this->loadOrderOrFail($orderId, $context);
 
-        $transactions = $order->getTransactions();
-        if ($transactions === null || $transactions->count() === 0) {
-            return $this->conflict('Order has no transactions.', 'order.no_transactions');
-        }
+            $transactions = $order->getTransactions();
+            if ($transactions === null || $transactions->count() === 0) {
+                return $this->conflict('Order has no transactions.', 'order.no_transactions');
+            }
 
-        $transactionId = $transactions->last()->getId();
-        $targetStatus = $this->getRequiredField($request, 'status');
+            $transactionId = $transactions->last()->getId();
+            $targetStatus = $this->getRequiredField($request, 'status');
 
-        $this->stateMachineService->transitionPayment($transactionId, $targetStatus, $context);
+            $this->stateMachineService->transitionPayment($transactionId, $targetStatus, $context);
 
-        return $this->respondWithOrder($orderId, $context);
+            return $this->respondWithOrder($orderId, $context);
+        });
     }
 
     #[Route(
@@ -69,19 +82,21 @@ class StatusController extends AbstractController
     )]
     public function setDeliveryStatus(string $orderId, Request $request, Context $context): JsonResponse
     {
-        $order = $this->loadOrderOrFail($orderId, $context);
+        return $this->withIdempotency($request, function () use ($orderId, $request, $context): JsonResponse {
+            $order = $this->loadOrderOrFail($orderId, $context);
 
-        $deliveries = $order->getDeliveries();
-        if ($deliveries === null || $deliveries->count() === 0) {
-            return $this->conflict('Order has no deliveries.', 'order.no_deliveries');
-        }
+            $deliveries = $order->getDeliveries();
+            if ($deliveries === null || $deliveries->count() === 0) {
+                return $this->conflict('Order has no deliveries.', 'order.no_deliveries');
+            }
 
-        $deliveryId = $deliveries->last()->getId();
-        $targetStatus = $this->getRequiredField($request, 'status');
+            $deliveryId = $deliveries->last()->getId();
+            $targetStatus = $this->getRequiredField($request, 'status');
 
-        $this->stateMachineService->transitionDelivery($deliveryId, $targetStatus, $context);
+            $this->stateMachineService->transitionDelivery($deliveryId, $targetStatus, $context);
 
-        return $this->respondWithOrder($orderId, $context);
+            return $this->respondWithOrder($orderId, $context);
+        });
     }
 
     private function assertOrderExists(string $orderId, Context $context): void
