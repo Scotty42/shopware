@@ -43,6 +43,14 @@ class QueryValidator
             ];
         }
 
+        if (isset($params['salesChannelId']) && !preg_match(self::HEX_PATTERN, $params['salesChannelId'])) {
+            $errors[] = [
+                'pointer' => '/salesChannelId',
+                'code'    => 'invalid_sales_channel_id',
+                'message' => 'salesChannelId must be a 32-character hexadecimal string',
+            ];
+        }
+
         foreach (['createdAfter', 'createdBefore'] as $field) {
             if (isset($params[$field])) {
                 try {

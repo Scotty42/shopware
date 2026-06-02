@@ -184,4 +184,21 @@ final class QueryValidatorTest extends TestCase
             $this->assertCount(3, $e->getValidationErrors());
         }
     }
+
+    public function testAcceptsValidSalesChannelId(): void
+    {
+        $this->validator->validateListParams(['salesChannelId' => '0123456789abcdef0123456789abcdef']);
+        $this->expectNotToPerformAssertions();
+    }
+
+    public function testRejectsInvalidSalesChannelId(): void
+    {
+        try {
+            $this->validator->validateListParams(['salesChannelId' => 'not-hex']);
+            $this->fail('Expected ValidationException');
+        } catch (ValidationException $e) {
+            $this->assertSame('/salesChannelId', $e->getValidationErrors()[0]['pointer']);
+            $this->assertSame('invalid_sales_channel_id', $e->getValidationErrors()[0]['code']);
+        }
+    }
 }
