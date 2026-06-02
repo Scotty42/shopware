@@ -151,6 +151,11 @@ final class OrderMapperTest extends TestCase
      * Constructs a minimal OrderEntity with just enough state for the
      * mapper to operate. Shopware OrderEntity exposes public setters
      * that we use here directly — keeps the test free of reflection.
+     *
+     * Important: every typed non-nullable property read by OrderMapper
+     * must be initialised here. PHP 8.2+ raises a fatal "must not be
+     * accessed before initialization" otherwise. Currently the mapper
+     * reads `billingAddressId` (non-nullable) plus the price totals.
      */
     private function makeOrder(
         string $id,
@@ -163,6 +168,8 @@ final class OrderMapperTest extends TestCase
         $order = new OrderEntity();
         $order->setId($id);
         $order->setVersionId($versionId);
+        $order->setOrderNumber('TEST-' . substr($id, 0, 6));
+        $order->setBillingAddressId(str_repeat('c', 32));
         $order->setCreatedAt($createdAt ?? new \DateTimeImmutable('2025-01-01T00:00:00+00:00'));
         if ($updatedAt !== null) {
             $order->setUpdatedAt($updatedAt);
