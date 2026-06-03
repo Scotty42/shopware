@@ -177,18 +177,18 @@ class DeliveryController extends AbstractController
         $this->findDelivery($deliveryId, $orderId, $context);
 
         $data = json_decode($request->getContent(), true) ?? [];
-        $targetStatus = $data['status'] ?? null;
 
-        if (empty($targetStatus)) {
-            return new JsonResponse([
-                'type'   => 'about:blank',
-                'title'  => 'Unprocessable Content',
-                'status' => 422,
-                'detail' => 'Validation failed.',
-                'code'   => 'order.validation_failed',
-                'errors' => [['pointer' => '/status', 'code' => 'required', 'message' => 'status is required']],
-            ], Response::HTTP_UNPROCESSABLE_ENTITY);
+        // Route the 422 through ValidationException so it carries the standard
+        // application/problem+json content-type and errors[] shape, consistent
+        // with every other validation error in the plugin (was a bare
+        // JsonResponse without the problem+json content-type).
+        if (empty($data['status'] ?? null)) {
+            throw new ValidationException([
+                ['pointer' => '/status', 'code' => 'required', 'message' => 'status is required'],
+            ]);
         }
+
+        $targetStatus = $data['status'];
 
         $this->stateMachineService->transitionDelivery($deliveryId, $targetStatus, $context);
 
