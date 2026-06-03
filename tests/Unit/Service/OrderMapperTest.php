@@ -4,6 +4,9 @@ namespace Scotty42\OrderIntegration\Tests\Unit\Service;
 
 use PHPUnit\Framework\TestCase;
 use Scotty42\OrderIntegration\Service\OrderMapper;
+use Shopware\Core\Checkout\Order\Aggregate\OrderAddress\OrderAddressEntity;
+use Shopware\Core\Checkout\Order\Aggregate\OrderDelivery\OrderDeliveryCollection;
+use Shopware\Core\Checkout\Order\Aggregate\OrderDelivery\OrderDeliveryEntity;
 use Shopware\Core\Checkout\Order\OrderEntity;
 use Shopware\Core\System\Currency\CurrencyEntity;
 use Shopware\Core\System\StateMachine\Aggregation\StateMachineState\StateMachineStateEntity;
@@ -194,5 +197,75 @@ final class OrderMapperTest extends TestCase
         }
 
         return $order;
+    }
+
+    /**
+     * Regression test for the bug where the order-level deliveryStatus was
+     * read from the LAST delivery while shippingAddress was read from the
+     * FIRST. For a split shipment the two fields then described different
+     * deliveries. They must now both reflect the primary (first) delivery.
+     */
+    public function testDeliveryStatusAndShippingAddressComeFromSameDelivery(): void
+    {
+        $order = $this->makeOrder(
+            id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            versionId: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+            updatedAt: new \DateTimeImmutable('2025-06-01T12:00:00+00:00'),
+            currencyIso: 'EUR',
+            stateTechnicalName: 'open',
+        );
+
+        $first = $this->makeDelivery(
+            id: str_repeat('1', 32),
+            stateTechnicalName: 'shipped',
+            zipcode: '11111',
+        );
+        $second = $this->makeDelivery(
+            id: str_repeat('2', 32),
+            stateTechnicalName: 'open',
+            zipcode: '22222',
+        );
+
+        $order->setDeliveries(new OrderDeliveryCollection([$first, $second]));
+
+        $payload = $this->mapper->mapOrder($order);
+
+        // Both derived from the FIRST delivery, not a mix of first + last.
+        $this->assertSame('shipped', $payload['deliveryStatus']);
+        $this->assertNotNull($payload['shippingAddress']);
+        $this->assertSame('11111', $payload['shippingAddress']['zipcode']);
+    }
+
+    private function makeDelivery(
+        string $id,
+        string $stateTechnicalName,
+        string $zipcode,
+    ): OrderDeliveryEntity {
+        $state = new StateMachineStateEntity();
+        $state->setId('state-' . substr($id, 0, 4));
+        $state->setTechnicalName($stateTechnicalName);
+
+        $address = new OrderAddressEntity();
+        $address->setId('addr-' . substr($id, 0, 4));
+        $address->setTitle(null);
+        $address->setFirstName('Test');
+        $address->setLastName('Buyer');
+        $address->setCompany(null);
+        $address->setStreet('Example Street 1');
+        $address->setAdditionalAddressLine1(null);
+        $address->setAdditionalAddressLine2(null);
+        $address->setZipcode($zipcode);
+        $address->setCity('Berlin');
+        $address->setPhoneNumber(null);
+        $address->setVatId(null);
+
+        $delivery = new OrderDeliveryEntity();
+        $delivery->setId($id);
+        $delivery->setStateMachineState($state);
+        $delivery->setShippingOrderAddress($address);
+        $delivery->setTrackingCodes([]);
+        $delivery->setCreatedAt(new \DateTimeImmutable('2025-06-01T10:00:00+00:00'));
+
+        return $delivery;
     }
 }
