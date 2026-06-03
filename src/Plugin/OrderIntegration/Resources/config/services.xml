@@ -66,5 +66,23 @@
         <service id="Scotty42\OrderIntegration\EventSubscriber\ExceptionSubscriber">
             <tag name="kernel.event_subscriber"/>
         </service>
+
+        <service id="Scotty42\OrderIntegration\Erp\ErpSyncPolicy"/>
+
+        <service id="Scotty42\OrderIntegration\Erp\ErpSyncService">
+            <argument type="service" id="order.repository"/>
+            <argument type="service" id="Scotty42\OrderIntegration\Erp\ErpSyncPolicy"/>
+        </service>
+
+        <service id="Scotty42\OrderIntegration\Controller\ErpSyncController" public="true">
+            <argument type="service" id="order.repository"/>
+            <argument type="service" id="Scotty42\OrderIntegration\Erp\ErpSyncService"/>
+            <argument type="service" id="Scotty42\OrderIntegration\Service\OrderMapper"/>
+            <tag name="controller.service_arguments"/>
+            <call method="setContainer">
+                <argument type="service" id="service_container"/>
+            </call>
+        </service>
+
     </services>
 </container>
