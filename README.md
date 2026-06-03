@@ -268,10 +268,45 @@ rm -rf /var/www/shopware/var/cache/*
 
 ---
 
+## Scaling: CQRS read projection + write queue
+
+For production traffic with **parallel writes**, the plugin can run the
+load-aware variant (Option C in `docs/order-api-concept.md` §2): a denormalized
+**read projection** and a durable **write queue** with a bounded worker pool.
+
+- **Write queue** — `POST /v1/orders` is durably accepted and answered with
+  `202 Accepted` + a job URL; a worker pool (`bin/console
+  order-integration:write-queue:drain`) applies commands to Shopware with a
+  global concurrency cap, exponential-backoff retries, idempotency, and
+  backpressure (`503` + `Retry-After`). The queue is claimed with
+  `FOR UPDATE SKIP LOCKED`, so several workers drain in parallel without ever
+  handing the same command twice — the core guarantee for concurrent access.
+- **Read projection** — `GET` reads are served from a Postgres JSONB projection
+  kept in sync from Shopware `order.written` / `order.deleted` events, so read
+  load never touches the shop DB.
+
+Both paths are **off by default** and gated by env flags
+(`ORDER_INTEGRATION_ASYNC_WRITES`, `ORDER_INTEGRATION_PROJECTION_READS`); with
+them off and no DSN the plugin keeps its synchronous, DAL-backed behaviour. A
+per-request `Prefer: respond-async | respond-sync` header overrides the write
+default.
+
+This needs a dedicated fast read/queue database (reference: **PostgreSQL 17** in
+its own **Proxmox LXC container** on Debian Trixie, alongside the existing
+`shopware-be` / `shopware-fe` containers, one DB for both tables). **Setup — LXC
+provisioning, PostgreSQL config, schema, env for testing (`.env.test` /
+`.env.test.dist`) and production, and the worker service — is documented in
+`docs/infrastructure-setup.md`.** Design rationale is in
+`docs/cqrs-write-queue-concept.md`.
+
+---
+
 ## Reference documents
 
 - `docs/order-api-concept.md` — full architecture analysis, Options A/B/C, ERP integration design, security model
 - `docs/order-api-openapi.yaml` — OpenAPI 3.1 spec for the full target API surface
 - `docs/spike-order-creation.md` — analysis of four order-creation paths in Shopware 6
+- `docs/cqrs-write-queue-concept.md` — CQRS read projection + write-queue design (Option C)
+- `docs/infrastructure-setup.md` — read/queue DB container, schema, env, and worker setup
 
 
