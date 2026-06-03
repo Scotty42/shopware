@@ -13,6 +13,7 @@
             <argument type="service" id="Scotty42\OrderIntegration\Service\StateMachineService"/>
             <argument type="service" id="Scotty42\OrderIntegration\Service\IdempotencyService"/>
             <argument type="service" id="Scotty42\OrderIntegration\Http\EtagComparator"/>
+            <argument type="service" id="Scotty42\OrderIntegration\Cqrs\CqrsGateway"/>
             <tag name="controller.service_arguments"/>
             <call method="setContainer">
                 <argument type="service" id="service_container"/>
@@ -92,6 +93,68 @@
             <argument type="service" id="order.repository"/>
             <argument type="service" id="Scotty42\OrderIntegration\Erp\ErpSyncService"/>
             <argument type="service" id="Scotty42\OrderIntegration\Service\OrderMapper"/>
+            <tag name="controller.service_arguments"/>
+            <call method="setContainer">
+                <argument type="service" id="service_container"/>
+            </call>
+        </service>
+
+        <!-- CQRS: read projection + write queue (Option C, concept docs/cqrs-write-queue-concept.md) -->
+        <service id="Scotty42\OrderIntegration\Cqrs\PdoConnectionProvider">
+            <factory class="Scotty42\OrderIntegration\Cqrs\PdoConnectionProvider" method="fromEnv"/>
+        </service>
+
+        <service id="Scotty42\OrderIntegration\Cqrs\Write\PdoWriteQueue">
+            <argument type="service" id="Scotty42\OrderIntegration\Cqrs\PdoConnectionProvider"/>
+        </service>
+        <service id="Scotty42\OrderIntegration\Cqrs\Write\WriteQueueInterface"
+                 alias="Scotty42\OrderIntegration\Cqrs\Write\PdoWriteQueue"/>
+
+        <service id="Scotty42\OrderIntegration\Cqrs\Read\PdoReadProjection">
+            <argument type="service" id="Scotty42\OrderIntegration\Cqrs\PdoConnectionProvider"/>
+        </service>
+        <service id="Scotty42\OrderIntegration\Cqrs\Read\ReadProjectionInterface"
+                 alias="Scotty42\OrderIntegration\Cqrs\Read\PdoReadProjection"/>
+
+        <service id="Scotty42\OrderIntegration\Cqrs\Write\RetryPolicy"/>
+        <service id="Scotty42\OrderIntegration\Cqrs\Write\BackpressurePolicy"/>
+
+        <service id="Scotty42\OrderIntegration\Cqrs\Write\ShopwareCommandHandler">
+            <argument type="service" id="Scotty42\OrderIntegration\Service\OrderCreationService"/>
+        </service>
+        <service id="Scotty42\OrderIntegration\Cqrs\Write\CommandHandlerInterface"
+                 alias="Scotty42\OrderIntegration\Cqrs\Write\ShopwareCommandHandler"/>
+
+        <service id="Scotty42\OrderIntegration\Cqrs\Write\WriteQueueWorker">
+            <argument type="service" id="Scotty42\OrderIntegration\Cqrs\Write\WriteQueueInterface"/>
+            <argument type="service" id="Scotty42\OrderIntegration\Cqrs\Write\CommandHandlerInterface"/>
+            <argument type="service" id="Scotty42\OrderIntegration\Cqrs\Write\RetryPolicy"/>
+        </service>
+
+        <service id="Scotty42\OrderIntegration\Cqrs\CqrsGateway">
+            <argument type="service" id="Scotty42\OrderIntegration\Cqrs\Write\WriteQueueInterface"/>
+            <argument type="service" id="Scotty42\OrderIntegration\Cqrs\Read\ReadProjectionInterface"/>
+            <argument type="service" id="Scotty42\OrderIntegration\Cqrs\Write\BackpressurePolicy"/>
+        </service>
+
+        <service id="Scotty42\OrderIntegration\Cqrs\Read\OrderProjectionWriter">
+            <argument type="service" id="Scotty42\OrderIntegration\Cqrs\Read\ReadProjectionInterface"/>
+            <argument type="service" id="Scotty42\OrderIntegration\Service\OrderMapper"/>
+        </service>
+
+        <service id="Scotty42\OrderIntegration\Cqrs\Read\OrderProjectionSubscriber">
+            <argument type="service" id="order.repository"/>
+            <argument type="service" id="Scotty42\OrderIntegration\Cqrs\Read\OrderProjectionWriter"/>
+            <tag name="kernel.event_subscriber"/>
+        </service>
+
+        <service id="Scotty42\OrderIntegration\Cqrs\Command\DrainWriteQueueCommand">
+            <argument type="service" id="Scotty42\OrderIntegration\Cqrs\Write\WriteQueueWorker"/>
+            <tag name="console.command"/>
+        </service>
+
+        <service id="Scotty42\OrderIntegration\Controller\JobController" public="true">
+            <argument type="service" id="Scotty42\OrderIntegration\Cqrs\Write\WriteQueueInterface"/>
             <tag name="controller.service_arguments"/>
             <call method="setContainer">
                 <argument type="service" id="service_container"/>

@@ -779,6 +779,50 @@ paths:
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '5XX': { $ref: '#/components/responses/ServerError' }
 
+  /jobs/{jobId}:
+    get:
+      tags: [Jobs]
+      summary: Job status for an asynchronously-queued write
+      operationId: getJob
+      description: >-
+        When async writes are enabled, a mutating endpoint returns 202 with a
+        Location pointing here. Poll until status is terminal (succeeded or
+        dead). On a succeeded order.create, links.order points at the new order.
+      security:
+        - mTLS: []
+          oauth2ClientCredentials: [orders:read]
+        - mTLS: []
+          apiKey: []
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Job representation.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [jobId, type, status]
+                properties:
+                  jobId:  { type: string }
+                  type:   { type: string, example: order.create }
+                  status:
+                    type: string
+                    enum: [queued, in_progress, succeeded, dead]
+                  attempts:  { type: integer }
+                  result:    { type: object, nullable: true }
+                  lastError: { type: string, nullable: true }
+                  links:
+                    type: object
+                    properties:
+                      order: { type: string }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '5XX': { $ref: '#/components/responses/ServerError' }
+
   /shipment-events:
     post:
       tags: [Shipment Events]
