@@ -682,6 +682,103 @@ paths:
         '412': { $ref: '#/components/responses/PreconditionFailed' }
         '5XX': { $ref: '#/components/responses/ServerError' }
 
+  /erp/orders:
+    get:
+      tags: [ERP]
+      summary: Pull queue — orders not yet acknowledged by the ERP
+      operationId: pullErpOrders
+      description: >-
+        Returns orders the ERP iPaaS has not yet acknowledged (customFields
+        erpSyncedAt is absent), optionally filtered by domain status, oldest
+        first. Acknowledged orders drop out of this queue.
+      security:
+        - mTLS: []
+          oauth2ClientCredentials: [erp:read]
+        - mTLS: []
+          apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/Traceparent'
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/OrderStatus'
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: cursor
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: A page of unacknowledged orders.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderPage'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '5XX': { $ref: '#/components/responses/ServerError' }
+
+  /erp/orders/acknowledge:
+    post:
+      tags: [ERP]
+      summary: Acknowledge orders as forwarded to the ERP
+      operationId: acknowledgeErpOrders
+      description: >-
+        Marks a batch of orders as known to the ERP by stamping
+        customFields.erpSyncedAt. Idempotent: already-synced ids keep their
+        first timestamp and are reported separately; unknown ids are reported,
+        not failed.
+      security:
+        - mTLS: []
+          oauth2ClientCredentials: [erp:write]
+        - mTLS: []
+          apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/Traceparent'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [orderIds]
+              properties:
+                orderIds:
+                  type: array
+                  minItems: 1
+                  maxItems: 500
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: Acknowledgement summary.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [acknowledged, alreadySynced, notFound, counts]
+                properties:
+                  acknowledged:  { type: array, items: { type: string } }
+                  alreadySynced: { type: array, items: { type: string } }
+                  notFound:      { type: array, items: { type: string } }
+                  counts:
+                    type: object
+                    properties:
+                      acknowledged:  { type: integer }
+                      alreadySynced: { type: integer }
+                      notFound:      { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '5XX': { $ref: '#/components/responses/ServerError' }
+
   /shipment-events:
     post:
       tags: [Shipment Events]
