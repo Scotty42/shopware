@@ -41,6 +41,14 @@ graph TB
     end
 
     FE -->|"HTTP LAN"| BE
+
+    subgraph DBLXC["LXC: order-integration-db (T13, optional)"]
+        PG["PostgreSQL 17\norder_read_projection (JSONB)\norder_write_queue (SKIP LOCKED)"]
+    end
+    Worker["write-queue worker (systemd)"]
+    Plugin -->|"CQRS reads / enqueue (when enabled)"| PG
+    Worker -->|"claim (SKIP LOCKED)"| PG
+    Worker --> SW
 ```
 The plugin lives inside the Shopware container. Test scripts call `http://localhost/...` because they run on the same host. External callers use `http://shopware-be.lan.internal/...`.
 
@@ -207,6 +215,7 @@ Codes added by the cross-cutting backlog items: `400 order.idempotency_key_requi
 | MariaDB | 10.11 | Default in Trixie |
 | Shopware | 6.6.x or 6.7.x | Installed at `/var/www/shopware` |
 | Composer | 2.x | For plugin dependency declaration |
+| PostgreSQL | 17 | CQRS read projection + write-queue DB — own LXC (`order-integration-db`), Trixie default. Only required when async writes / projection reads are enabled (T13). See `docs/infrastructure-setup.md`. |
 
 ---
 
@@ -301,9 +310,42 @@ rm -rf /var/www/shopware/var/cache/*
 | **3 (done)** | `PATCH /v1/orders/{id}`, `DELETE /v1/orders/{id}` (soft cancel), Delivery sub-resource (list, get, create-split, patch tracking, status transition) — line-item allocation (`positions`) and richer PATCH fields remain for a follow-up |
 | **Hardening (done — backlog T1–T11)** | Idempotency-Key enforcement (T2), If-Match/ETag optimistic concurrency (T3), `sort` (T4) + `salesChannelId` (T5) + `customerId` UUID (T6) on list, soft-delete correctness (T7), POST validation (T8), mapper delivery consistency (T9), delivery 422 problem+json (T10), HTTP/CI test coverage (T11), doc alignment (T1). See `docs/BACKLOG.md`. |
 | **ERP pull-sync (done — T12)** | `GET /v1/erp/orders` pull queue + `POST /v1/erp/orders/acknowledge` with the `erpSyncedAt` flag (see `docs/erp-pull-sync-concept.md`). Complements the webhook/`shipment-events` design in §7a, which remains a follow-up. |
-| **4** | Read projection fed by Shopware business events — decouple read traffic from Shopware DB (concept §2 Phase 2; CQRS branch in review) |
+| **4 (done — T13)** | Read projection fed by Shopware `order.written`/`order.deleted` events — decouples read traffic from the shop DB (Postgres JSONB; concept §2 Phase 2). Off by default via `ORDER_INTEGRATION_PROJECTION_READS`. |
 | **4b** | **ERP webhook path** — outbound `order.created` webhook, inbound batched `POST /shipment-events` for FFP-driven shipment status & tracking (see `docs/order-api-concept.md` §7a) |
-| **5** | Write queue + async workers (concept §2 Phase 3; CQRS branch in review). Dedicated auth (API key / mTLS), ACL role-based scopes, rate limiting — open. |
+| **5 (partial — T13)** | Write queue + bounded async workers (Postgres `SKIP LOCKED`, retry, backpressure; concept §2 Phase 3), off by default via `ORDER_INTEGRATION_ASYNC_WRITES`. Dedicated auth (API key / mTLS), ACL scopes, rate limiting — still open. |
+
+---
+
+## Scaling: CQRS read projection + write queue
+
+For production traffic with **parallel writes**, the plugin can run the
+load-aware variant (Option C in `docs/order-api-concept.md` §2): a denormalized
+**read projection** and a durable **write queue** with a bounded worker pool.
+
+- **Write queue** — `POST /v1/orders` is durably accepted and answered with
+  `202 Accepted` + a job URL; a worker pool (`bin/console
+  order-integration:write-queue:drain`) applies commands to Shopware with a
+  global concurrency cap, exponential-backoff retries, idempotency, and
+  backpressure (`503` + `Retry-After`). The queue is claimed with
+  `FOR UPDATE SKIP LOCKED`, so several workers drain in parallel without ever
+  handing the same command twice — the core guarantee for concurrent access.
+- **Read projection** — `GET` reads are served from a Postgres JSONB projection
+  kept in sync from Shopware `order.written` / `order.deleted` events, so read
+  load never touches the shop DB.
+
+Both paths are **off by default** and gated by env flags
+(`ORDER_INTEGRATION_ASYNC_WRITES`, `ORDER_INTEGRATION_PROJECTION_READS`); with
+them off and no DSN the plugin keeps its synchronous, DAL-backed behaviour. A
+per-request `Prefer: respond-async | respond-sync` header overrides the write
+default.
+
+This needs a dedicated fast read/queue database (reference: **PostgreSQL 17** in
+its own **Proxmox LXC container** on Debian Trixie, alongside the existing
+`shopware-be` / `shopware-fe` containers, one DB for both tables). **Setup — LXC
+provisioning, PostgreSQL config, schema, env for testing (`.env.test` /
+`.env.test.dist`) and production, and the worker service — is documented in
+`docs/infrastructure-setup.md`.** Design rationale is in
+`docs/cqrs-write-queue-concept.md`.
 
 ---
 
@@ -315,5 +357,7 @@ rm -rf /var/www/shopware/var/cache/*
 - `docs/erp-pull-sync-concept.md` — ERP pull queue + acknowledge flag design (T12)
 - `docs/testing.md` — unit vs. integration test layers and the CI gap
 - `docs/BACKLOG.md` — the hardening backlog (T1–T11) with per-task rationale
+- `docs/cqrs-write-queue-concept.md` — CQRS read projection + write-queue design (Option C / T13)
+- `docs/infrastructure-setup.md` — read/queue DB LXC, schema, env, and worker setup (T13)
 
 

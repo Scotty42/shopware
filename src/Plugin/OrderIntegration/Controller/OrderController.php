@@ -3,6 +3,7 @@
 namespace Scotty42\OrderIntegration\Controller;
 
 use Scotty42\OrderIntegration\Exception\OrderNotFoundException;
+use Scotty42\OrderIntegration\Cqrs\CqrsGateway;
 use Scotty42\OrderIntegration\Exception\ValidationException;
 use Scotty42\OrderIntegration\Http\EtagComparator;
 use Scotty42\OrderIntegration\Service\IdempotencyService;
@@ -43,6 +44,7 @@ class OrderController extends AbstractController
         private readonly StateMachineService $stateMachineService,
         private readonly IdempotencyService $idempotency,
         private readonly EtagComparator $etagComparator,
+        private readonly CqrsGateway $cqrs,
     ) {}
 
     protected function getIdempotencyService(): IdempotencyService
@@ -65,6 +67,20 @@ class OrderController extends AbstractController
         $this->queryValidator->validateListParams($request->query->all());
 
         $limit = min($request->query->getInt('limit', 50), 200);
+
+        // CQRS read path: serve from the projection when enabled.
+        if ($this->cqrs->projectionReadsEnabled()) {
+            $filters = array_filter([
+                'status'         => $request->query->get('status'),
+                'salesChannelId' => $request->query->get('salesChannelId'),
+            ], static fn ($v) => $v !== null);
+            $projected = $this->cqrs->listProjected($filters, $limit, $request->query->get('cursor'));
+
+            return new JsonResponse([
+                'items' => $projected['items'],
+                'page'  => ['limit' => $limit, 'nextCursor' => $projected['nextCursor']],
+            ]);
+        }
 
         // `sort` is validated by QueryValidator (whitelist <field>:<asc|desc>).
         $sortParam = (string) $request->query->get('sort', 'createdAt:desc');
@@ -167,6 +183,29 @@ class OrderController extends AbstractController
 
             $this->orderCreateValidator->validate($data);
 
+            // CQRS write path: enqueue and return 202 when async writes are enabled
+            // (or the caller sends Prefer: respond-async). Protects Shopware from
+            // raw parallel write load — see docs/cqrs-write-queue-concept.md.
+            if ($this->cqrs->wantsAsyncWrite($request)) {
+                if ($this->cqrs->shouldShed()) {
+                    return new JsonResponse([
+                        'type' => 'about:blank', 'title' => 'Service Unavailable', 'status' => 503,
+                        'detail' => 'Write queue saturated, retry later.', 'code' => 'order.backpressure',
+                    ], Response::HTTP_SERVICE_UNAVAILABLE, [
+                        'Content-Type' => 'application/problem+json',
+                        'Retry-After'  => (string) $this->cqrs->retryAfterSeconds(),
+                    ]);
+                }
+
+                $job = $this->cqrs->enqueueOrderCreate($data, $request->headers->get('Idempotency-Key'));
+
+                return new JsonResponse(
+                    ['jobId' => $job->id, 'status' => $job->status],
+                    Response::HTTP_ACCEPTED,
+                    ['Location' => sprintf('/api/order-integration/v1/jobs/%s', $job->id)]
+                );
+            }
+
             $orderId = $this->orderCreationService->createOrder($data, $context);
             $order = $this->findOrder($orderId, $context);
 
@@ -188,6 +227,15 @@ class OrderController extends AbstractController
     )]
     public function get(string $orderId, Context $context): JsonResponse
     {
+        if ($this->cqrs->projectionReadsEnabled()) {
+            $projected = $this->cqrs->getProjectedOrder($orderId);
+            if ($projected !== null) {
+                return new JsonResponse($projected, Response::HTTP_OK, [
+                    'ETag' => $this->weakEtagFromSnapshot($projected),
+                ]);
+            }
+        }
+
         $order = $this->findOrder($orderId, $context);
 
         return new JsonResponse(
@@ -277,6 +325,18 @@ class OrderController extends AbstractController
             'orderNumber' => $order->getOrderNumber(),
             default       => $order->getCreatedAt()?->format(\DateTimeInterface::ATOM),
         };
+    }
+
+    /**
+     * Weak ETag for a projection snapshot (no entity available on this path).
+     *
+     * @param array<string,mixed> $snapshot
+     */
+    private function weakEtagFromSnapshot(array $snapshot): string
+    {
+        $material = ($snapshot['id'] ?? '') . '|' . ($snapshot['version'] ?? '') . '|' . ($snapshot['updatedAt'] ?? '');
+
+        return 'W/"' . sha1($material) . '"';
     }
 
     private function findOrder(string $orderId, Context $context): OrderEntity
