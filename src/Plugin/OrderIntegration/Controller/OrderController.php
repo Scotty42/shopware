@@ -7,6 +7,7 @@ use Scotty42\OrderIntegration\Exception\ValidationException;
 use Scotty42\OrderIntegration\Service\OrderCreationService;
 use Scotty42\OrderIntegration\Service\OrderMapper;
 use Scotty42\OrderIntegration\Service\OrderPatchService;
+use Scotty42\OrderIntegration\Service\SoftDeletePolicy;
 use Scotty42\OrderIntegration\Service\StateMachineService;
 use Scotty42\OrderIntegration\Validator\QueryValidator;
 use Shopware\Core\Checkout\Order\OrderEntity;
@@ -61,6 +62,9 @@ class OrderController extends AbstractController
                 'orderCustomer.customerId',
                 \Scotty42\OrderIntegration\Validator\QueryValidator::normalizeId($customerId)
             ));
+        }
+        if ($salesChannelId = $request->query->get('salesChannelId')) {
+            $criteria->addFilter(new EqualsFilter('salesChannelId', $salesChannelId));
         }
         if ($createdAfter = $request->query->get('createdAfter')) {
             $criteria->addFilter(new RangeFilter('createdAt', [RangeFilter::GTE => $createdAfter]));
@@ -202,7 +206,7 @@ class OrderController extends AbstractController
     )]
     public function delete(string $orderId, Request $request, Context $context): JsonResponse
     {
-        $this->findOrder($orderId, $context);
+        $order = $this->findOrder($orderId, $context);
 
         $hard = $request->query->getBoolean('hard', false);
 
@@ -216,12 +220,12 @@ class OrderController extends AbstractController
             ], Response::HTTP_FORBIDDEN, ['Content-Type' => 'application/problem+json']);
         }
 
-        // Soft delete: transition to cancelled. If already cancelled, the
-        // state-machine will reject the transition — treat as idempotent.
-        try {
+        // Soft delete = transition to cancelled. Only an already-cancelled
+        // order is an idempotent no-op; any other illegal transition (e.g.
+        // from `completed`) must surface as 409 rather than a fake 204.
+        $currentStatus = $order->getStateMachineState()?->getTechnicalName();
+        if (!SoftDeletePolicy::isAlreadyCancelled($currentStatus)) {
             $this->stateMachineService->transitionOrder($orderId, 'cancelled', $context);
-        } catch (\Scotty42\OrderIntegration\Exception\InvalidTransitionException $e) {
-            // Already cancelled — idempotent success.
         }
 
         return new JsonResponse(null, Response::HTTP_NO_CONTENT);

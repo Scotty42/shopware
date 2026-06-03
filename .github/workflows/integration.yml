@@ -1,0 +1,45 @@
+# Integration test suite (HTTP layer) — SCAFFOLD, manual dispatch only.
+#
+# The controllers, OrderCreationService, OrderPatchService and
+# DeliveryController need a live Shopware kernel and DB, so they cannot run in
+# the lightweight PHPUnit unit job (ci.yml). This workflow documents and
+# scaffolds the integration run against a real Shopware install using the
+# repo's bash suite (tests/api_test.sh). It is intentionally `workflow_dispatch`
+# only — it does NOT gate PRs until a Shopware service container + seed data
+# are wired up (tracked as a follow-up).
+name: Integration (HTTP)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  api-suite:
+    name: api_test.sh against a live Shopware
+    runs-on: ubuntu-latest
+    # Guarded so an accidental run is a clear no-op rather than a red X.
+    if: ${{ vars.SHOPWARE_INTEGRATION_ENABLED == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # TODO(follow-up): provision Shopware 6.6 + MariaDB as service containers,
+      # install + activate this plugin, then seed a product and sales channel.
+      # The steps below assume those secrets/vars point at a reachable backend.
+      - name: Configure environment
+        run: |
+          cp .env.test.dist .env.test
+          {
+            echo "SHOPWARE_URL=${{ secrets.SHOPWARE_URL }}"
+            echo "SHOPWARE_ADMIN_USER=${{ secrets.SHOPWARE_ADMIN_USER }}"
+            echo "SHOPWARE_ADMIN_PASSWORD=${{ secrets.SHOPWARE_ADMIN_PASSWORD }}"
+            echo "SHOPWARE_SALES_CHANNEL_ID=${{ secrets.SHOPWARE_SALES_CHANNEL_ID }}"
+            echo "SHOPWARE_TEST_PRODUCT_ID=${{ secrets.SHOPWARE_TEST_PRODUCT_ID }}"
+          } >> .env.test
+
+      - name: Seed a test order
+        run: bash tests/create_test_order.sh
+
+      - name: Run the HTTP integration suite
+        run: bash tests/api_test.sh

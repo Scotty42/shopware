@@ -3,6 +3,7 @@
 namespace Scotty42\OrderIntegration\Service;
 
 use Shopware\Core\Checkout\Order\Aggregate\OrderAddress\OrderAddressEntity;
+use Shopware\Core\Checkout\Order\Aggregate\OrderDelivery\OrderDeliveryEntity;
 use Shopware\Core\Checkout\Order\Aggregate\OrderLineItem\OrderLineItemEntity;
 use Shopware\Core\Checkout\Order\OrderEntity;
 
@@ -108,17 +109,25 @@ class OrderMapper
 
     private function extractDeliveryStatus(OrderEntity $order): ?string
     {
+        // Use the same "primary delivery" as mapShippingAddress() so the
+        // order-level deliveryStatus and shippingAddress always describe the
+        // same delivery (was inconsistent: last() here vs first() there).
+        return $this->primaryDelivery($order)?->getStateMachineState()?->getTechnicalName();
+    }
+
+    /**
+     * The order-level delivery view (deliveryStatus + shippingAddress) is
+     * derived from the first delivery. Full per-delivery detail is served by
+     * the dedicated /orders/{id}/deliveries sub-resource.
+     */
+    private function primaryDelivery(OrderEntity $order): ?OrderDeliveryEntity
+    {
         $deliveries = $order->getDeliveries();
         if ($deliveries === null || $deliveries->count() === 0) {
             return null;
         }
 
-        // Phase 1: single-delivery orders are the norm. We expose the last
-        // delivery's status as the order-level deliveryStatus, mirroring the
-        // semantics of PUT /orders/{id}/delivery-status.
-        $last = $deliveries->last();
-
-        return $last?->getStateMachineState()?->getTechnicalName();
+        return $deliveries->first();
     }
 
     private function mapCustomer(OrderEntity $order): ?array
@@ -161,14 +170,9 @@ class OrderMapper
     private function mapShippingAddress(OrderEntity $order): ?array
     {
         // The order does not carry a single shippingAddressId; deliveries do.
-        // Phase 1: report the first delivery's shipping address.
-        $deliveries = $order->getDeliveries();
-        if ($deliveries === null || $deliveries->count() === 0) {
-            return null;
-        }
-
-        $first = $deliveries->first();
-        $address = $first?->getShippingOrderAddress();
+        // Report the primary (first) delivery's shipping address — the same
+        // delivery that extractDeliveryStatus() reports the status of.
+        $address = $this->primaryDelivery($order)?->getShippingOrderAddress();
 
         return $address instanceof OrderAddressEntity ? $this->mapAddress($address) : null;
     }
