@@ -12,6 +12,9 @@ name: Integration (HTTP)
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   api-suite:
     name: api_test.sh against a live Shopware
