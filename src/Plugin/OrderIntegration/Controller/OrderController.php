@@ -9,6 +9,7 @@ use Scotty42\OrderIntegration\Service\OrderMapper;
 use Scotty42\OrderIntegration\Service\OrderPatchService;
 use Scotty42\OrderIntegration\Service\SoftDeletePolicy;
 use Scotty42\OrderIntegration\Service\StateMachineService;
+use Scotty42\OrderIntegration\Validator\OrderCreateValidator;
 use Scotty42\OrderIntegration\Validator\QueryValidator;
 use Shopware\Core\Checkout\Order\OrderEntity;
 use Shopware\Core\Framework\Context;
@@ -30,6 +31,7 @@ class OrderController extends AbstractController
     public function __construct(
         private readonly EntityRepository $orderRepository,
         private readonly QueryValidator $queryValidator,
+        private readonly OrderCreateValidator $orderCreateValidator,
         private readonly OrderCreationService $orderCreationService,
         private readonly OrderPatchService $orderPatchService,
         private readonly OrderMapper $orderMapper,
@@ -145,16 +147,7 @@ class OrderController extends AbstractController
             ]);
         }
 
-        $errors = [];
-        if (empty($data['salesChannelId'])) {
-            $errors[] = ['pointer' => '/salesChannelId', 'code' => 'required', 'message' => 'salesChannelId is required'];
-        }
-        if (empty($data['lineItems'])) {
-            $errors[] = ['pointer' => '/lineItems', 'code' => 'required', 'message' => 'lineItems must not be empty'];
-        }
-        if (!empty($errors)) {
-            throw new ValidationException($errors);
-        }
+        $this->orderCreateValidator->validate($data);
 
         $orderId = $this->orderCreationService->createOrder($data, $context);
         $order = $this->findOrder($orderId, $context);
