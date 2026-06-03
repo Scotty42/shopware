@@ -108,9 +108,13 @@ paths:
             $ref: '#/components/schemas/OrderStatus'
         - name: customerId
           in: query
+          description: >-
+            Customer id. Accepts both a canonical UUID (with dashes) and
+            Shopware's internal 32-char hex form; the two are equivalent and
+            normalized server-side.
           schema:
             type: string
-            format: uuid
+            pattern: '^([0-9a-fA-F]{32}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$'
         - name: salesChannelId
           in: query
           schema:
