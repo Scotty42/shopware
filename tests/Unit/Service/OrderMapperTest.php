@@ -264,7 +264,13 @@ final class OrderMapperTest extends TestCase
         $delivery->setStateMachineState($state);
         $delivery->setShippingOrderAddress($address);
         $delivery->setTrackingCodes([]);
+        // OrderDeliveryEntity has non-nullable-before-init typed date props that
+        // mapDeliveriesSummary() reads — initialise them so the test exercises
+        // the mapper without hitting "accessed before initialization".
+        $delivery->setShippingDateEarliest(new \DateTimeImmutable('2025-06-01T10:00:00+00:00'));
+        $delivery->setShippingDateLatest(new \DateTimeImmutable('2025-06-08T10:00:00+00:00'));
         $delivery->setCreatedAt(new \DateTimeImmutable('2025-06-01T10:00:00+00:00'));
+        $delivery->setUpdatedAt(new \DateTimeImmutable('2025-06-01T10:00:00+00:00'));
 
         return $delivery;
     }
