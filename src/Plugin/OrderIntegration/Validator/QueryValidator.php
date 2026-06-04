@@ -12,6 +12,9 @@ class QueryValidator
     /** Allowed `sort` values: <field>:<asc|desc> over a small whitelist. */
     private const SORT_PATTERN = '/^(createdAt|updatedAt|orderNumber):(asc|desc)$/';
 
+    /** Canonical RFC 4122 UUID (with dashes), case-insensitive. */
+    private const UUID_PATTERN = '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i';
+
     public function validateListParams(array $params): void
     {
         $errors = [];
@@ -46,11 +49,19 @@ class QueryValidator
             ];
         }
 
-        if (isset($params['customerId']) && !preg_match(self::HEX_PATTERN, $params['customerId'])) {
+        if (isset($params['customerId']) && !self::isValidId((string) $params['customerId'])) {
             $errors[] = [
                 'pointer' => '/customerId',
                 'code'    => 'invalid_customer_id',
-                'message' => 'customerId must be a 32-character hexadecimal string',
+                'message' => 'customerId must be a 32-character hex id or a canonical UUID',
+            ];
+        }
+
+        if (isset($params['salesChannelId']) && !preg_match(self::HEX_PATTERN, $params['salesChannelId'])) {
+            $errors[] = [
+                'pointer' => '/salesChannelId',
+                'code'    => 'invalid_sales_channel_id',
+                'message' => 'salesChannelId must be a 32-character hexadecimal string',
             ];
         }
 
@@ -108,5 +119,23 @@ class QueryValidator
         $legacy = !empty($parsed['id']) && !empty($parsed['createdAt']);
 
         return $keyset || $legacy;
+    }
+
+    /**
+     * Accepts both Shopware's internal 32-char hex id and a canonical
+     * RFC 4122 UUID (with dashes). Callers should feed the value through
+     * normalizeId() before building Shopware filters.
+     */
+    public static function isValidId(string $id): bool
+    {
+        return (bool) (preg_match(self::HEX_PATTERN, $id) || preg_match(self::UUID_PATTERN, $id));
+    }
+
+    /**
+     * Normalizes an id to Shopware's internal form: l-case, dashes removed.
+     */
+    public static function normalizeId(string $id): string
+    {
+        return strtolower(str_replace('-', '', $id));
     }
 }
