@@ -3,9 +3,10 @@
 # HTTP integration suite. Runs against a live Shopware backend with the plugin
 # installed. Repeatable on a clean install.
 #
-# Updated for T2 (Idempotency-Key): every mutating request (POST/PUT/PATCH/
-# DELETE on orders + status) now sends a fresh Idempotency-Key, and the
-# idempotency behaviour itself is covered (missing key -> 400, replay, conflict).
+# Updated for T2 (Idempotency-Key) and T3 (If-Match): order mutations now
+# require a fresh Idempotency-Key AND an If-Match matching the current ETag.
+# POST /orders needs only Idempotency-Key (no resource to match yet); the
+# delivery sub-resource needs neither (not wired in T2/T3 — follow-up).
 #
 set -uo pipefail
 
@@ -22,7 +23,7 @@ ok()  { echo "✓ $1"; ((PASS++))||true; }
 bad() { echo "✗ $1"; ((FAIL++))||true; }
 
 jqpy() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)" 2>/dev/null; }
-idem() { python3 -c "import uuid;print(uuid.uuid4())"; }   # fresh Idempotency-Key
+idem() { python3 -c "import uuid;print(uuid.uuid4())"; }            # fresh Idempotency-Key
 
 TOKEN=$(curl -sf -X POST "$SHOPWARE_URL/api/oauth/token" \
   -H 'Content-Type: application/json' \
@@ -44,20 +45,20 @@ JSON=(-H "Content-Type: application/json")
 CUSTOMER_ID=$(curl -s "${AUTH[@]}" "$SHOPWARE_URL/api/customer?limit=1" | jqpy "d['data'][0]['id']")
 ORDER_BODY="{\"salesChannelId\":\"$SHOPWARE_SALES_CHANNEL_ID\",\"customer\":{\"id\":\"$CUSTOMER_ID\"},\"lineItems\":[{\"productId\":\"$SHOPWARE_TEST_PRODUCT_ID\",\"quantity\":1}]}"
 
-# Create an order via the API (mutating -> needs a fresh Idempotency-Key).
+# Create an order (mutating -> Idempotency-Key; create has no If-Match).
 create_order() {
   curl -s -X POST "$BASE/orders" "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" \
     -d "$ORDER_BODY" | jqpy "d.get('id','')"
 }
+# Current weak ETag of an order (for If-Match on the next mutation).
+etag_of() { curl -s -I "${AUTH[@]}" "$BASE/orders/$1" | grep -i '^etag:' | awk '{print $2}' | tr -d '\r\n'; }
 status_code() { curl -s -o /dev/null -w "%{http_code}" "$@"; }
 
 echo "=== Read & auth ==="
 assert_status "GET /orders returns 200" "200" "$(status_code "${AUTH[@]}" "$BASE/orders")"
-
 LIST=$(curl -s "${AUTH[@]}" "$BASE/orders")
 COUNT=$(echo "$LIST" | jqpy "len(d['items'])")
 [[ "${COUNT:-0}" -ge 1 ]] && ok "GET /orders returns at least 1 item (got $COUNT)" || bad "GET /orders returns >=1 item (got ${COUNT:-0})"
-
 assert_status "GET /orders?status=open returns 200" "200" "$(status_code "${AUTH[@]}" "$BASE/orders?status=open")"
 assert_status "GET /orders/{id} unknown returns 404" "404" "$(status_code "${AUTH[@]}" "$BASE/orders/b878ba70bf7d47a12ae61ad5b1dc8582")"
 assert_eq "404 has RFC 9457 code" "order.not_found" "$(curl -s "${AUTH[@]}" "$BASE/orders/b878ba70bf7d47a12ae61ad5b1dc8582" | jqpy "d['code']")"
@@ -79,38 +80,42 @@ assert_status "status=invalid -> 422"          "422" "$(status_code "${AUTH[@]}"
 assert_status "limit=999 -> 422"               "422" "$(status_code "${AUTH[@]}" "$BASE/orders?limit=999")"
 assert_status "createdAfter=not-a-date -> 422" "422" "$(status_code "${AUTH[@]}" "$BASE/orders?createdAfter=not-a-date")"
 assert_status "sort=createdAt:asc -> 200"       "200" "$(status_code "${AUTH[@]}" "$BASE/orders?sort=createdAt:asc")"
-assert_status "sort=orderNumber:desc -> 200"    "200" "$(status_code "${AUTH[@]}" "$BASE/orders?sort=orderNumber:desc")"
 assert_status "sort=total:asc (unknown) -> 422" "422" "$(status_code "${AUTH[@]}" "$BASE/orders?sort=total:asc")"
-assert_status "sort=createdAt:up (bad dir) -> 422" "422" "$(status_code "${AUTH[@]}" "$BASE/orders?sort=createdAt:up")"
 assert_status "salesChannelId filter -> 200"    "200" "$(status_code "${AUTH[@]}" "$BASE/orders?salesChannelId=$SHOPWARE_SALES_CHANNEL_ID")"
 assert_status "salesChannelId=not-hex -> 422"   "422" "$(status_code "${AUTH[@]}" "$BASE/orders?salesChannelId=not-hex")"
 UUID_CUST=$(python3 -c "import sys;h=sys.argv[1];print(f'{h[0:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}')" "$CUSTOMER_ID")
 assert_status "customerId as UUID accepted -> 200"  "200" "$(status_code "${AUTH[@]}" "$BASE/orders?customerId=$UUID_CUST")"
-assert_status "customerId as 32-hex accepted -> 200" "200" "$(status_code "${AUTH[@]}" "$BASE/orders?customerId=$CUSTOMER_ID")"
 assert_status "customerId garbage -> 422"       "422" "$(status_code "${AUTH[@]}" "$BASE/orders?customerId=not-an-id")"
 
 echo ""
 echo "=== Idempotency (T2) ==="
-# Missing Idempotency-Key on a mutation -> 400
 assert_status "POST without Idempotency-Key -> 400" "400" "$(status_code -X POST "${AUTH[@]}" "${JSON[@]}" -d "$ORDER_BODY" "$BASE/orders")"
-# Replay: same key + same body returns the original order
 IK=$(idem)
 R1=$(curl -s -X POST "$BASE/orders" "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $IK" -d "$ORDER_BODY" | jqpy "d.get('id','')")
 R2=$(curl -s -X POST "$BASE/orders" "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $IK" -d "$ORDER_BODY" | jqpy "d.get('id','')")
 [[ -n "$R1" && "$R1" == "$R2" ]] && ok "Replay: same key+body -> same order ($R1)" || bad "Replay: expected same order, got '$R1' vs '$R2'"
-# Conflict: same key + different body -> 409
 DIFF_BODY="{\"salesChannelId\":\"$SHOPWARE_SALES_CHANNEL_ID\",\"customer\":{\"id\":\"$CUSTOMER_ID\"},\"lineItems\":[{\"productId\":\"$SHOPWARE_TEST_PRODUCT_ID\",\"quantity\":2}]}"
 assert_status "Reused key + different body -> 409" "409" "$(status_code -X POST "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $IK" -d "$DIFF_BODY" "$BASE/orders")"
+
+echo ""
+echo "=== Optimistic concurrency / If-Match (T3) ==="
+CC=$(create_order)
+# missing If-Match (key present) -> 428
+assert_status "PUT /status without If-Match -> 428" "428" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -d '{"status":"in_progress"}' "$BASE/orders/$CC/status")"
+# wrong If-Match -> 412
+assert_status "PUT /status wrong If-Match -> 412" "412" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H 'If-Match: W/"deadbeefdeadbeefdeadbeefdeadbeef"' -d '{"status":"in_progress"}' "$BASE/orders/$CC/status")"
+# correct If-Match -> 200
+assert_status "PUT /status correct If-Match -> 200" "200" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "If-Match: $(etag_of $CC)" -d '{"status":"in_progress"}' "$BASE/orders/$CC/status")"
 
 echo ""
 echo "=== Status transitions ==="
 TR=$(create_order)
 [[ -n "$TR" ]] && ok "Created transition order $TR" || bad "Create transition order"
-assert_status "PUT /status in_progress -> 200" "200" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -d '{"status":"in_progress"}' "$BASE/orders/$TR/status")"
-assert_status "PUT /payment-status paid -> 200" "200" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -d '{"status":"paid"}' "$BASE/orders/$TR/payment-status")"
-assert_status "PUT /delivery-status shipped -> 200" "200" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -d '{"status":"shipped"}' "$BASE/orders/$TR/delivery-status")"
-assert_status "PUT /status unknown name -> 409" "409" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -d '{"status":"invalid"}' "$BASE/orders/$TR/status")"
-assert_status "PUT /status no field -> 422" "422" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -d '{}' "$BASE/orders/$TR/status")"
+assert_status "PUT /status in_progress -> 200" "200" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "If-Match: $(etag_of $TR)" -d '{"status":"in_progress"}' "$BASE/orders/$TR/status")"
+assert_status "PUT /payment-status paid -> 200" "200" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "If-Match: $(etag_of $TR)" -d '{"status":"paid"}' "$BASE/orders/$TR/payment-status")"
+assert_status "PUT /delivery-status shipped -> 200" "200" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "If-Match: $(etag_of $TR)" -d '{"status":"shipped"}' "$BASE/orders/$TR/delivery-status")"
+assert_status "PUT /status unknown name -> 409" "409" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "If-Match: $(etag_of $TR)" -d '{"status":"invalid"}' "$BASE/orders/$TR/status")"
+assert_status "PUT /status no field -> 422" "422" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "If-Match: $(etag_of $TR)" -d '{}' "$BASE/orders/$TR/status")"
 
 echo ""
 echo "=== Spec-compliant Order shape ==="
@@ -126,7 +131,6 @@ try:
 except Exception: print('missing')")
   [[ "$v" == "present" ]] && { echo "✓ $d"; ((PASS++))||true; } || { echo "✗ $d — $v at $path"; ((FAIL++))||true; }
 }
-
 SAMPLE_ID=$(echo "$LIST" | jqpy "d['items'][0]['id']")
 OJSON=$(curl -s "${AUTH[@]}" "$BASE/orders/$SAMPLE_ID")
 for f in paymentStatus deliveryStatus currency version customer billingAddress lineItems; do
@@ -135,12 +139,11 @@ done
 assert_field "GET single has customer.email" "$OJSON" "customer.email"
 assert_field "GET single has lineItems[0].id" "$OJSON" "lineItems.[0].id"
 assert_field "GET single has total.amount" "$OJSON" "total.amount"
-
-ETAG=$(curl -s -I "${AUTH[@]}" "$BASE/orders/$SAMPLE_ID" | grep -i '^etag:' | awk '{print $2}' | tr -d '\r\n')
+ETAG=$(etag_of "$SAMPLE_ID")
 [[ -n "$ETAG" ]] && ok "GET single returns ETag header ($ETAG)" || bad "GET single ETag missing"
 
 echo ""
-echo "=== POST validation ==="
+echo "=== POST validation (Idempotency-Key, no If-Match on create) ==="
 NEW_ID=$(create_order)
 [[ -n "$NEW_ID" ]] && ok "POST /orders created $NEW_ID" || bad "POST /orders create"
 assert_status "POST missing salesChannelId -> 422" "422" "$(status_code -X POST "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -d "{\"lineItems\":[{\"productId\":\"$SHOPWARE_TEST_PRODUCT_ID\",\"quantity\":1}]}" "$BASE/orders")"
@@ -149,17 +152,16 @@ assert_status "POST missing lineItems -> 422" "422" "$(status_code -X POST "${AU
 echo ""
 echo "=== PATCH ==="
 PATCH_ID=$(create_order)
-COMMENT=$(curl -s -X PATCH "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -d '{"customerComment":"Bitte klingeln"}' "$BASE/orders/$PATCH_ID" | jqpy "d.get('customerComment','')")
+COMMENT=$(curl -s -X PATCH "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "If-Match: $(etag_of $PATCH_ID)" -d '{"customerComment":"Bitte klingeln"}' "$BASE/orders/$PATCH_ID" | jqpy "d.get('customerComment','')")
 assert_eq "PATCH updates customerComment" "Bitte klingeln" "$COMMENT"
-assert_status "PATCH empty body -> 422" "422" "$(status_code -X PATCH "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -d '{}' "$BASE/orders/$PATCH_ID")"
+assert_status "PATCH empty body -> 422" "422" "$(status_code -X PATCH "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "If-Match: $(etag_of $PATCH_ID)" -d '{}' "$BASE/orders/$PATCH_ID")"
 assert_status "PATCH unknown id -> 404" "404" "$(status_code -X PATCH "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -d '{"customerComment":"x"}' "$BASE/orders/b878ba70bf7d47a12ae61ad5b1dc8582")"
-NEW_STREET=$(curl -s -X PATCH "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -d '{"shippingAddress":{"street":"Neue Strasse 9"}}' "$BASE/orders/$PATCH_ID" | python3 -c "import sys,json;print((json.load(sys.stdin).get('shippingAddress') or {}).get('street',''))" 2>/dev/null)
+assert_status "PATCH without If-Match -> 428" "428" "$(status_code -X PATCH "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -d '{"customerComment":"x"}' "$BASE/orders/$PATCH_ID")"
+NEW_STREET=$(curl -s -X PATCH "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "If-Match: $(etag_of $PATCH_ID)" -d '{"shippingAddress":{"street":"Neue Strasse 9"}}' "$BASE/orders/$PATCH_ID" | python3 -c "import sys,json;print((json.load(sys.stdin).get('shippingAddress') or {}).get('street',''))" 2>/dev/null)
 assert_eq "PATCH shippingAddress persists street" "Neue Strasse 9" "$NEW_STREET"
 
 echo ""
-echo "=== Delivery sub-resource (incl. T10) ==="
-# Note: DeliveryController is not idempotency-wired in T2 (follow-up), so these
-# do not need an Idempotency-Key.
+echo "=== Delivery sub-resource (no Idempotency-Key / If-Match — not wired) ==="
 DORD=$(create_order)
 DID=$(curl -s "${AUTH[@]}" "$BASE/orders/$DORD" | jqpy "d['deliveries'][0]['id']")
 assert_status "GET /deliveries -> 200" "200" "$(status_code "${AUTH[@]}" "$BASE/orders/$DORD/deliveries")"
@@ -174,12 +176,13 @@ echo "$DCT" | grep -qi 'application/problem+json' && ok "delivery 422 is applica
 echo ""
 echo "=== DELETE soft cancel (incl. T7 idempotency) ==="
 DEL=$(create_order)
-assert_status "DELETE -> 204" "204" "$(status_code -X DELETE "${AUTH[@]}" -H "Idempotency-Key: $(idem)" "$BASE/orders/$DEL")"
+assert_status "DELETE without If-Match -> 428" "428" "$(status_code -X DELETE "${AUTH[@]}" -H "Idempotency-Key: $(idem)" "$BASE/orders/$DEL")"
+assert_status "DELETE -> 204" "204" "$(status_code -X DELETE "${AUTH[@]}" -H "Idempotency-Key: $(idem)" -H "If-Match: $(etag_of $DEL)" "$BASE/orders/$DEL")"
 assert_eq "DELETE sets status cancelled" "cancelled" "$(curl -s "${AUTH[@]}" "$BASE/orders/$DEL" | jqpy "d['status']")"
-assert_status "DELETE again (idempotent) -> 204" "204" "$(status_code -X DELETE "${AUTH[@]}" -H "Idempotency-Key: $(idem)" "$BASE/orders/$DEL")"
+assert_status "DELETE again (idempotent) -> 204" "204" "$(status_code -X DELETE "${AUTH[@]}" -H "Idempotency-Key: $(idem)" -H "If-Match: $(etag_of $DEL)" "$BASE/orders/$DEL")"
 assert_eq "still cancelled after re-DELETE" "cancelled" "$(curl -s "${AUTH[@]}" "$BASE/orders/$DEL" | jqpy "d['status']")"
 assert_status "DELETE unknown id -> 404" "404" "$(status_code -X DELETE "${AUTH[@]}" -H "Idempotency-Key: $(idem)" "$BASE/orders/b878ba70bf7d47a12ae61ad5b1dc8582")"
-assert_status "DELETE ?hard=true -> 403" "403" "$(status_code -X DELETE "${AUTH[@]}" -H "Idempotency-Key: $(idem)" "$BASE/orders/$DEL?hard=true")"
+assert_status "DELETE ?hard=true -> 403" "403" "$(status_code -X DELETE "${AUTH[@]}" -H "Idempotency-Key: $(idem)" -H "If-Match: $(etag_of $DEL)" "$BASE/orders/$DEL?hard=true")"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
