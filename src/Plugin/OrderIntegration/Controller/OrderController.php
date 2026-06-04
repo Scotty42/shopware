@@ -16,7 +16,6 @@ use Shopware\Core\Framework\DataAbstractionLayer\EntityRepository;
 use Shopware\Core\Framework\DataAbstractionLayer\Search\Criteria;
 use Shopware\Core\Framework\DataAbstractionLayer\Search\Filter\EqualsFilter;
 use Shopware\Core\Framework\DataAbstractionLayer\Search\Filter\MultiFilter;
-use Shopware\Core\Framework\DataAbstractionLayer\Search\Filter\NotFilter;
 use Shopware\Core\Framework\DataAbstractionLayer\Search\Filter\RangeFilter;
 use Shopware\Core\Framework\DataAbstractionLayer\Search\Sorting\FieldSorting;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -48,9 +47,16 @@ class OrderController extends AbstractController
 
         $limit = min($request->query->getInt('limit', 50), 200);
 
+        // `sort` is validated by QueryValidator (whitelist <field>:<asc|desc>).
+        $sortParam = (string) $request->query->get('sort', 'createdAt:desc');
+        [$sortField, $sortDir] = explode(':', $sortParam) + [1 => 'desc'];
+        $direction = strtolower($sortDir) === 'asc'
+            ? FieldSorting::ASCENDING
+            : FieldSorting::DESCENDING;
+
         $criteria = new Criteria();
-        $criteria->addSorting(new FieldSorting('createdAt', FieldSorting::DESCENDING));
-        $criteria->addSorting(new FieldSorting('id', FieldSorting::DESCENDING));
+        $criteria->addSorting(new FieldSorting($sortField, $direction));
+        $criteria->addSorting(new FieldSorting('id', $direction)); // deterministic tiebreaker
         $criteria->addAssociations(OrderMapper::REQUIRED_ASSOCIATIONS);
         $criteria->setLimit($limit + 1);
 
@@ -75,14 +81,23 @@ class OrderController extends AbstractController
 
         if ($cursorRaw = $request->query->get('cursor')) {
             $cursor = json_decode(base64_decode($cursorRaw), true);
+
+            // Keyset pagination over the active sort field (+ id tiebreaker),
+            // honouring the sort direction. Falls back to the legacy
+            // {createdAt, id} cursor shape for backward compatibility.
+            $cursorField = $cursor['field'] ?? 'createdAt';
+            $cursorValue = $cursor['value'] ?? ($cursor['createdAt'] ?? null);
+            $cursorId    = $cursor['id'];
+            $cursorDir   = $cursor['dir'] ?? $sortDir;
+            $rangeOp     = strtolower((string) $cursorDir) === 'asc'
+                ? RangeFilter::GT
+                : RangeFilter::LT;
+
             $criteria->addFilter(new MultiFilter(MultiFilter::CONNECTION_OR, [
-                new RangeFilter('createdAt', [RangeFilter::LT => $cursor['createdAt']]),
+                new RangeFilter($cursorField, [$rangeOp => $cursorValue]),
                 new MultiFilter(MultiFilter::CONNECTION_AND, [
-                    new EqualsFilter('createdAt', $cursor['createdAt']),
-                    new NotFilter(MultiFilter::CONNECTION_AND, [
-                        new EqualsFilter('id', $cursor['id']),
-                    ]),
-                    new RangeFilter('id', [RangeFilter::LT => $cursor['id']]),
+                    new EqualsFilter($cursorField, $cursorValue),
+                    new RangeFilter('id', [$rangeOp => $cursorId]),
                 ]),
             ]));
         }
@@ -99,8 +114,10 @@ class OrderController extends AbstractController
         if ($hasMore && !empty($elements)) {
             $last = end($elements);
             $nextCursor = base64_encode(json_encode([
-                'createdAt' => $last->getCreatedAt()?->format(\DateTimeInterface::ATOM),
-                'id'        => $last->getId(),
+                'field' => $sortField,
+                'value' => $this->sortValue($last, $sortField),
+                'id'    => $last->getId(),
+                'dir'   => $sortDir,
             ]));
         }
 
@@ -229,6 +246,19 @@ class OrderController extends AbstractController
         }
 
         return new JsonResponse(null, Response::HTTP_NO_CONTENT);
+    }
+
+    /**
+     * Returns the comparable value of $field on the order, used to build the
+     * keyset pagination cursor. Mirrors the whitelist in QueryValidator.
+     */
+    private function sortValue(OrderEntity $order, string $field): ?string
+    {
+        return match ($field) {
+            'updatedAt'   => $order->getUpdatedAt()?->format(\DateTimeInterface::ATOM),
+            'orderNumber' => $order->getOrderNumber(),
+            default       => $order->getCreatedAt()?->format(\DateTimeInterface::ATOM),
+        };
     }
 
     private function findOrder(string $orderId, Context $context): OrderEntity

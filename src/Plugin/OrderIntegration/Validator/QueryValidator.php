@@ -9,6 +9,9 @@ class QueryValidator
     private const VALID_STATUSES = ['open', 'in_progress', 'completed', 'cancelled'];
     private const HEX_PATTERN = '/^[0-9a-f]{32}$/';
 
+    /** Allowed `sort` values: <field>:<asc|desc> over a small whitelist. */
+    private const SORT_PATTERN = '/^(createdAt|updatedAt|orderNumber):(asc|desc)$/';
+
     /** Canonical RFC 4122 UUID (with dashes), case-insensitive. */
     private const UUID_PATTERN = '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i';
 
@@ -35,6 +38,14 @@ class QueryValidator
                     'status must be one of: %s',
                     implode(', ', self::VALID_STATUSES)
                 ),
+            ];
+        }
+
+        if (isset($params['sort']) && !preg_match(self::SORT_PATTERN, (string) $params['sort'])) {
+            $errors[] = [
+                'pointer' => '/sort',
+                'code'    => 'invalid_sort',
+                'message' => 'sort must be one of createdAt|updatedAt|orderNumber followed by :asc or :desc',
             ];
         }
 
@@ -78,7 +89,7 @@ class QueryValidator
                 ];
             } else {
                 $parsed = json_decode($decoded, true);
-                if (!is_array($parsed) || empty($parsed['createdAt']) || empty($parsed['id'])) {
+                if (!is_array($parsed) || !$this->isValidCursorPayload($parsed)) {
                     $errors[] = [
                         'pointer' => '/cursor',
                         'code'    => 'invalid_cursor',
@@ -91,6 +102,23 @@ class QueryValidator
         if (!empty($errors)) {
             throw new ValidationException($errors);
         }
+    }
+
+    /**
+     * Accepts the keyset cursor shape emitted by the list endpoint
+     * ({field, value, id, dir}) as well as the legacy {createdAt, id} shape.
+     *
+     * @param array<string,mixed> $parsed
+     */
+    private function isValidCursorPayload(array $parsed): bool
+    {
+        $keyset = !empty($parsed['id'])
+            && !empty($parsed['field'])
+            && array_key_exists('value', $parsed);
+
+        $legacy = !empty($parsed['id']) && !empty($parsed['createdAt']);
+
+        return $keyset || $legacy;
     }
 
     /**
