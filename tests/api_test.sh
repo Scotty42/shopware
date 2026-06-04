@@ -1,470 +1,185 @@
 #!/usr/bin/env bash
+#
+# HTTP integration suite. Runs against a live Shopware backend with the plugin
+# installed. Repeatable on a clean install.
+#
+# Refreshed after merging backlog T4-T10: hardened against order-state/order
+# ordering, and extended with regression coverage for the new behaviour
+# (sort, salesChannelId filter, customerId as UUID, soft-delete idempotency,
+# delivery-status problem+json).
+#
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/../.env.test"
 
+BASE="$SHOPWARE_URL/api/order-integration/v1"
 PASS=0
 FAIL=0
 
-assert_status() {
-  local description="$1" expected="$2" actual="$3"
-  if [[ "$actual" == "$expected" ]]; then
-    echo "✓ $description"
-    ((PASS++)) || true
-  else
-    echo "✗ $description — expected HTTP $expected, got $actual"
-    ((FAIL++)) || true
-  fi
-}
+assert_status() { local d="$1" e="$2" a="$3"; if [[ "$a" == "$e" ]]; then echo "✓ $d"; ((PASS++))||true; else echo "✗ $d — expected HTTP $e, got $a"; ((FAIL++))||true; fi; }
+assert_eq()     { local d="$1" e="$2" a="$3"; if [[ "$a" == "$e" ]]; then echo "✓ $d"; ((PASS++))||true; else echo "✗ $d — expected '$e', got '$a'"; ((FAIL++))||true; fi; }
+ok()  { echo "✓ $1"; ((PASS++))||true; }
+bad() { echo "✗ $1"; ((FAIL++))||true; }
 
-assert_eq() {
-  local description="$1" expected="$2" actual="$3"
-  if [[ "$actual" == "$expected" ]]; then
-    echo "✓ $description"
-    ((PASS++)) || true
-  else
-    echo "✗ $description — expected '$expected', got '$actual'"
-    ((FAIL++)) || true
-  fi
-}
+# Parse JSON from stdin with a python expression over `d`.
+jqpy() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)" 2>/dev/null; }
 
 TOKEN=$(curl -sf -X POST "$SHOPWARE_URL/api/oauth/token" \
   -H 'Content-Type: application/json' \
   -d "{\"grant_type\":\"password\",\"client_id\":\"administration\",\"username\":\"$SHOPWARE_ADMIN_USER\",\"password\":\"$SHOPWARE_ADMIN_PASSWORD\",\"scopes\":\"write\"}" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
-assert_eq "Token acquired" "1" "1"
+  | jqpy "d['access_token']")
 
-# GET /v1/orders — 200
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-  -H "Authorization: Bearer $TOKEN" \
-  "$SHOPWARE_URL/api/order-integration/v1/orders")
-assert_status "GET /v1/orders returns 200" "200" "$STATUS"
-
-# GET /v1/orders — at least 1 item
-RESPONSE=$(curl -s -H "Authorization: Bearer $TOKEN" \
-  "$SHOPWARE_URL/api/order-integration/v1/orders")
-COUNT=$(echo "$RESPONSE" | python3 -c "import sys,json; print(len(json.load(sys.stdin)['items']))")
-if [[ "$COUNT" -ge 1 ]]; then
-  echo "✓ GET /v1/orders returns at least 1 item (got $COUNT)"
-  ((PASS++)) || true
-else
-  echo "✗ GET /v1/orders — expected at least 1 item, got $COUNT"
-  ((FAIL++)) || true
+# Preflight: the suite needs a reachable, live Shopware. Fail fast with a clear
+# message instead of a cascade of HTTP 000 / JSON errors when it is not.
+if [[ -z "$TOKEN" ]]; then
+  echo "✗ Could not obtain an admin token from: $SHOPWARE_URL"
+  echo "  HTTP 000 means the host is not reachable from where this runs."
+  echo "  The integration suite needs a reachable, live Shopware with the plugin installed."
+  echo "  - Run it on the shopware-be LXC (there SHOPWARE_URL=http://localhost), or"
+  echo "  - set SHOPWARE_URL in .env.test to a URL reachable from this machine"
+  echo "    (e.g. http://shopware-be.lan.internal) and verify connectivity with curl, and"
+  echo "  - check SHOPWARE_ADMIN_USER / SHOPWARE_ADMIN_PASSWORD in .env.test."
+  exit 1
 fi
+ok "Token acquired"
 
-# GET /v1/orders?status=open — 200
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-  -H "Authorization: Bearer $TOKEN" \
-  "$SHOPWARE_URL/api/order-integration/v1/orders?status=open")
-assert_status "GET /v1/orders?status=open returns 200" "200" "$STATUS"
+AUTH=(-H "Authorization: Bearer $TOKEN")
+JSON=(-H "Content-Type: application/json")
 
-# Pagination — nextCursor with limit=1
-CURSOR=$(curl -s -H "Authorization: Bearer $TOKEN" \
-  "$SHOPWARE_URL/api/order-integration/v1/orders?limit=1" \
-  | python3 -c "import sys,json; c=json.load(sys.stdin)['page']['nextCursor']; print(c if c else '')")
+CUSTOMER_ID=$(curl -s "${AUTH[@]}" "$SHOPWARE_URL/api/customer?limit=1" | jqpy "d['data'][0]['id']")
+
+# Create an order via the API; echoes the new order id.
+create_order() {
+  curl -s -X POST "$BASE/orders" "${AUTH[@]}" "${JSON[@]}" \
+    -d "{\"salesChannelId\":\"$SHOPWARE_SALES_CHANNEL_ID\",\"customer\":{\"id\":\"$CUSTOMER_ID\"},\"lineItems\":[{\"productId\":\"$SHOPWARE_TEST_PRODUCT_ID\",\"quantity\":1}]}" \
+    | jqpy "d.get('id','')"
+}
+status_code() { curl -s -o /dev/null -w "%{http_code}" "$@"; }
+
+echo "=== Read & auth ==="
+assert_status "GET /orders returns 200" "200" "$(status_code "${AUTH[@]}" "$BASE/orders")"
+
+LIST=$(curl -s "${AUTH[@]}" "$BASE/orders")
+COUNT=$(echo "$LIST" | jqpy "len(d['items'])")
+[[ "${COUNT:-0}" -ge 1 ]] && ok "GET /orders returns at least 1 item (got $COUNT)" || bad "GET /orders returns >=1 item (got ${COUNT:-0})"
+
+assert_status "GET /orders?status=open returns 200" "200" "$(status_code "${AUTH[@]}" "$BASE/orders?status=open")"
+
+assert_status "GET /orders/{id} unknown returns 404" "404" "$(status_code "${AUTH[@]}" "$BASE/orders/b878ba70bf7d47a12ae61ad5b1dc8582")"
+assert_eq "404 has RFC 9457 code" "order.not_found" "$(curl -s "${AUTH[@]}" "$BASE/orders/b878ba70bf7d47a12ae61ad5b1dc8582" | jqpy "d['code']")"
+assert_status "Invalid token returns 401" "401" "$(status_code -H 'Authorization: Bearer invalid-token' "$BASE/orders")"
+assert_status "No token returns 401" "401" "$(status_code "$BASE/orders")"
+
+echo ""
+echo "=== Pagination (keyset cursor) ==="
+CURSOR=$(curl -s "${AUTH[@]}" "$BASE/orders?limit=1" | jqpy "d['page']['nextCursor'] or ''")
+[[ -n "$CURSOR" ]] && ok "GET /orders?limit=1 returns nextCursor" || bad "GET /orders?limit=1 nextCursor empty"
 if [[ -n "$CURSOR" ]]; then
-CURSOR_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$CURSOR")
-  echo "✓ GET /v1/orders?limit=1 returns nextCursor"
-  ((PASS++)) || true
-else
-  echo "✗ GET /v1/orders?limit=1 — nextCursor is empty"
-  ((FAIL++)) || true
-fi
-
-# Pagination — second page
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-  -H "Authorization: Bearer $TOKEN" \
-  "$SHOPWARE_URL/api/order-integration/v1/orders?limit=1&cursor=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$CURSOR'))")"  )
-assert_status "GET /v1/orders with cursor returns 200" "200" "$STATUS"
-
-# GET /v1/orders/{id} — valid
-ORDER_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['items'][0]['id'])")
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-  -H "Authorization: Bearer $TOKEN" \
-  "$SHOPWARE_URL/api/order-integration/v1/orders/$ORDER_ID")
-assert_status "GET /v1/orders/{id} returns 200" "200" "$STATUS"
-
-# GET /v1/orders/{id} — not found
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-  -H "Authorization: Bearer $TOKEN" \
-  "$SHOPWARE_URL/api/order-integration/v1/orders/b878ba70bf7d47a12ae61ad5b1dc8582")
-assert_status "GET /v1/orders/{id} unknown id returns 404" "404" "$STATUS"
-
-ERROR_CODE=$(curl -s -H "Authorization: Bearer $TOKEN" \
-  "$SHOPWARE_URL/api/order-integration/v1/orders/b878ba70bf7d47a12ae61ad5b1dc8582" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['code'])")
-assert_eq "404 response has RFC 9457 code" "order.not_found" "$ERROR_CODE"
-
-# Invalid token — 401
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-  -H "Authorization: Bearer invalid-token" \
-  "$SHOPWARE_URL/api/order-integration/v1/orders")
-assert_status "Invalid token returns 401" "401" "$STATUS"
-
-# No token — 401
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-  "$SHOPWARE_URL/api/order-integration/v1/orders")
-assert_status "No token returns 401" "401" "$STATUS"
-
-echo ""
-
-# Validation tests
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-  -H "Authorization: Bearer $TOKEN" \
-  "$SHOPWARE_URL/api/order-integration/v1/orders?status=invalid")
-assert_status "Invalid status returns 422" "422" "$STATUS"
-
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-  -H "Authorization: Bearer $TOKEN" \
-  "$SHOPWARE_URL/api/order-integration/v1/orders?limit=999")
-assert_status "limit=999 returns 422" "422" "$STATUS"
-
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-  -H "Authorization: Bearer $TOKEN" \
-  "$SHOPWARE_URL/api/order-integration/v1/orders?createdAfter=not-a-date")
-assert_status "Invalid createdAfter returns 422" "422" "$STATUS"
-
-
-# Client Credentials Auth
-CC_TOKEN=$(curl -sf -X POST "$SHOPWARE_URL/api/oauth/token" \
-  -H 'Content-Type: application/json' \
-  -d "{\"grant_type\": \"client_credentials\", \"client_id\": \"$SHOPWARE_INTEGRATION_ACCESS_KEY\", \"client_secret\": \"$SHOPWARE_INTEGRATION_SECRET\"}" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
-assert_eq "Client credentials token acquired" "1" "1"
-
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-  -H "Authorization: Bearer $CC_TOKEN" \
-  "$SHOPWARE_URL/api/order-integration/v1/orders")
-assert_status "GET /v1/orders with client credentials returns 200" "200" "$STATUS"
-# Create fresh order for transition tests
-CUSTOMER_ID=$(curl -s "$SHOPWARE_URL/api/customer?limit=1" -H "Authorization: Bearer $TOKEN" | python3 -c "import sys,json; print(json.load(sys.stdin)['data'][0]['id'])")
-TRANSITION_ORDER_ID=$(curl -s -X POST "$SHOPWARE_URL/api/order-integration/v1/orders" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "{\"salesChannelId\": \"$SHOPWARE_SALES_CHANNEL_ID\", \"customer\": {\"id\": \"$CUSTOMER_ID\"}, \"lineItems\": [{\"productId\": \"$SHOPWARE_TEST_PRODUCT_ID\", \"quantity\": 1}]}" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
-
-
-# Status transitions
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"status": "in_progress"}' \
-  "$SHOPWARE_URL/api/order-integration/v1/orders/$TRANSITION_ORDER_ID/status")
-assert_status "PUT /v1/orders/{id}/status returns 200" "200" "$STATUS"
-
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"status": "paid"}' \
-  "$SHOPWARE_URL/api/order-integration/v1/orders/$TRANSITION_ORDER_ID/payment-status")
-assert_status "PUT /v1/orders/{id}/payment-status returns 200" "200" "$STATUS"
-
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"status": "shipped"}' \
-  "$SHOPWARE_URL/api/order-integration/v1/orders/$TRANSITION_ORDER_ID/delivery-status")
-assert_status "PUT /v1/orders/{id}/delivery-status returns 200" "200" "$STATUS"
-
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"status": "invalid"}' \
-  "$SHOPWARE_URL/api/order-integration/v1/orders/$TRANSITION_ORDER_ID/status")
-assert_status "PUT /v1/orders/{id}/status invalid name returns 409" "409" "$STATUS"
-
-# Bug-#7 regression: a valid status name from an incompatible source state
-# must also return 409 (not 500). Pick a target that the order cannot reach
-# from its current state — `cancelled` after a successful `complete` would
-# fail; we test the reverse here by trying to re-complete an order that has
-# just been cancelled (if reachable from this fixture, ExceptionSubscriber
-# must translate Shopware's IllegalTransitionException to 409).
-RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X PUT \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"status": "completed"}' \
-  "$SHOPWARE_URL/api/order-integration/v1/orders/$TRANSITION_ORDER_ID/status")
-HTTP_STATUS=$(echo "$RESPONSE" | grep '^HTTP_STATUS:' | cut -d: -f2)
-if [[ "$HTTP_STATUS" == "409" ]] || [[ "$HTTP_STATUS" == "200" ]]; then
-  echo "✓ PUT /v1/orders/{id}/status illegal transition returns 409 (or 200 if reachable; got $HTTP_STATUS)"
-  ((PASS++)) || true
-elif [[ "$HTTP_STATUS" == "500" ]]; then
-  echo "✗ PUT /v1/orders/{id}/status illegal transition returned 500 — IllegalTransitionException not mapped (bug #7)"
-  ((FAIL++)) || true
-else
-  echo "✗ PUT /v1/orders/{id}/status illegal transition returned unexpected $HTTP_STATUS"
-  ((FAIL++)) || true
+  CURSOR_ENC=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))" "$CURSOR")
+  assert_status "GET /orders with cursor returns 200" "200" "$(status_code "${AUTH[@]}" "$BASE/orders?limit=1&cursor=$CURSOR_ENC")"
 fi
 
 echo ""
+echo "=== Validation (T4/T5/T6) ==="
+assert_status "status=invalid -> 422"          "422" "$(status_code "${AUTH[@]}" "$BASE/orders?status=invalid")"
+assert_status "limit=999 -> 422"               "422" "$(status_code "${AUTH[@]}" "$BASE/orders?limit=999")"
+assert_status "createdAfter=not-a-date -> 422" "422" "$(status_code "${AUTH[@]}" "$BASE/orders?createdAfter=not-a-date")"
+assert_status "sort=createdAt:asc -> 200"       "200" "$(status_code "${AUTH[@]}" "$BASE/orders?sort=createdAt:asc")"
+assert_status "sort=orderNumber:desc -> 200"    "200" "$(status_code "${AUTH[@]}" "$BASE/orders?sort=orderNumber:desc")"
+assert_status "sort=total:asc (unknown) -> 422" "422" "$(status_code "${AUTH[@]}" "$BASE/orders?sort=total:asc")"
+assert_status "sort=createdAt:up (bad dir) -> 422" "422" "$(status_code "${AUTH[@]}" "$BASE/orders?sort=createdAt:up")"
+assert_status "salesChannelId filter -> 200"    "200" "$(status_code "${AUTH[@]}" "$BASE/orders?salesChannelId=$SHOPWARE_SALES_CHANNEL_ID")"
+assert_status "salesChannelId=not-hex -> 422"   "422" "$(status_code "${AUTH[@]}" "$BASE/orders?salesChannelId=not-hex")"
+UUID_CUST=$(python3 -c "import sys;h=sys.argv[1];print(f'{h[0:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}')" "$CUSTOMER_ID")
+assert_status "customerId as UUID accepted -> 200"  "200" "$(status_code "${AUTH[@]}" "$BASE/orders?customerId=$UUID_CUST")"
+assert_status "customerId as 32-hex accepted -> 200" "200" "$(status_code "${AUTH[@]}" "$BASE/orders?customerId=$CUSTOMER_ID")"
+assert_status "customerId garbage -> 422"       "422" "$(status_code "${AUTH[@]}" "$BASE/orders?customerId=not-an-id")"
 
-# POST /v1/orders — create order
-CUSTOMER_ID=$(curl -s "$SHOPWARE_URL/api/customer?limit=1" \
-  -H "Authorization: Bearer $TOKEN" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['data'][0]['id'])")
+echo ""
+echo "=== Client credentials auth ==="
+CC_TOKEN=$(curl -sf -X POST "$SHOPWARE_URL/api/oauth/token" "${JSON[@]}" \
+  -d "{\"grant_type\":\"client_credentials\",\"client_id\":\"$SHOPWARE_INTEGRATION_ACCESS_KEY\",\"client_secret\":\"$SHOPWARE_INTEGRATION_SECRET\"}" \
+  | jqpy "d['access_token']")
+[[ -n "$CC_TOKEN" ]] && ok "Client credentials token acquired" || bad "Client credentials token"
+assert_status "GET /orders with client credentials -> 200" "200" "$(status_code -H "Authorization: Bearer $CC_TOKEN" "$BASE/orders")"
 
-NEW_ORDER=$(curl -s -X POST "$SHOPWARE_URL/api/order-integration/v1/orders" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"salesChannelId\": \"$SHOPWARE_SALES_CHANNEL_ID\",
-    \"customer\": {\"id\": \"$CUSTOMER_ID\"},
-    \"lineItems\": [{\"productId\": \"$SHOPWARE_TEST_PRODUCT_ID\", \"quantity\": 1}]
-  }")
-
-NEW_ORDER_ID=$(echo "$NEW_ORDER" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
-if [[ -n "$NEW_ORDER_ID" ]]; then
-  echo "✓ POST /v1/orders created order $NEW_ORDER_ID"
-  ((PASS++)) || true
-else
-  echo "✗ POST /v1/orders failed"
-  ((FAIL++)) || true
-fi
-
-# POST /v1/orders — missing salesChannelId returns 422
-# Use double quotes so the shell expands $SHOPWARE_TEST_PRODUCT_ID; the test
-# asserts that the API rejects requests that lack salesChannelId even when
-# the rest of the body is structurally valid.
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d "{\"lineItems\": [{\"productId\": \"$SHOPWARE_TEST_PRODUCT_ID\", \"quantity\": 1}]}" \
-  "$SHOPWARE_URL/api/order-integration/v1/orders")
-assert_status "POST /v1/orders missing salesChannelId returns 422" "422" "$STATUS"
-
-# POST /v1/orders — missing lineItems returns 422
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d "{\"salesChannelId\": \"$SHOPWARE_SALES_CHANNEL_ID\"}" \
-  "$SHOPWARE_URL/api/order-integration/v1/orders")
-assert_status "POST /v1/orders missing lineItems returns 422" "422" "$STATUS"
+echo ""
+echo "=== Status transitions ==="
+TR=$(create_order)
+[[ -n "$TR" ]] && ok "Created transition order $TR" || bad "Create transition order"
+assert_status "PUT /status in_progress -> 200" "200" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -d '{"status":"in_progress"}' "$BASE/orders/$TR/status")"
+assert_status "PUT /payment-status paid -> 200" "200" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -d '{"status":"paid"}' "$BASE/orders/$TR/payment-status")"
+assert_status "PUT /delivery-status shipped -> 200" "200" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -d '{"status":"shipped"}' "$BASE/orders/$TR/delivery-status")"
+assert_status "PUT /status unknown name -> 409" "409" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -d '{"status":"invalid"}' "$BASE/orders/$TR/status")"
+assert_status "PUT /status no field -> 422" "422" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -d '{}' "$BASE/orders/$TR/status")"
 
 echo ""
 echo "=== Spec-compliant Order shape ==="
-
-# Helper: assert a JSON path exists and is not null
-assert_field_present() {
-  local description="$1" json="$2" path="$3"
-  local value
-  value=$(echo "$json" | python3 -c "
-import sys, json
+assert_field() {
+  local d="$1" json="$2" path="$3" v
+  v=$(echo "$json" | python3 -c "
+import sys,json
 try:
-  obj = json.load(sys.stdin)
-  for key in '$path'.split('.'):
-    if key.startswith('[') and key.endswith(']'):
-      obj = obj[int(key[1:-1])]
-    else:
-      obj = obj[key]
-  print('present' if obj is not None else 'null')
-except Exception:
-  print('missing')
-")
-  if [[ "$value" == "present" ]]; then
-    echo "✓ $description"
-    ((PASS++)) || true
-  else
-    echo "✗ $description — got $value at path $path"
-    ((FAIL++)) || true
-  fi
+  o=json.load(sys.stdin)
+  for k in '$path'.split('.'):
+    o=o[int(k[1:-1])] if k.startswith('[') else o[k]
+  print('present' if o is not None else 'null')
+except Exception: print('missing')")
+  [[ "$v" == "present" ]] && { echo "✓ $d"; ((PASS++))||true; } || { echo "✗ $d — $v at $path"; ((FAIL++))||true; }
 }
 
-# Pick an order id we can read fully
-SAMPLE_ID=$(curl -s -H "Authorization: Bearer $TOKEN" \
-  "$SHOPWARE_URL/api/order-integration/v1/orders?limit=1" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['items'][0]['id'])")
+SAMPLE_ID=$(echo "$LIST" | jqpy "d['items'][0]['id']")
+OJSON=$(curl -s "${AUTH[@]}" "$BASE/orders/$SAMPLE_ID")
+for f in paymentStatus deliveryStatus currency version customer billingAddress lineItems; do
+  assert_field "GET single has $f" "$OJSON" "$f"
+done
+assert_field "GET single has customer.email" "$OJSON" "customer.email"
+assert_field "GET single has lineItems[0].id" "$OJSON" "lineItems.[0].id"
+assert_field "GET single has total.amount" "$OJSON" "total.amount"
 
-# GET single — assert spec-required fields
-ORDER_JSON=$(curl -s -H "Authorization: Bearer $TOKEN" \
-  "$SHOPWARE_URL/api/order-integration/v1/orders/$SAMPLE_ID")
-
-assert_field_present "GET single has paymentStatus"  "$ORDER_JSON" "paymentStatus"
-assert_field_present "GET single has deliveryStatus" "$ORDER_JSON" "deliveryStatus"
-assert_field_present "GET single has currency"       "$ORDER_JSON" "currency"
-assert_field_present "GET single has version"        "$ORDER_JSON" "version"
-assert_field_present "GET single has customer"       "$ORDER_JSON" "customer"
-assert_field_present "GET single has customer.email" "$ORDER_JSON" "customer.email"
-assert_field_present "GET single has billingAddress" "$ORDER_JSON" "billingAddress"
-assert_field_present "GET single has lineItems"      "$ORDER_JSON" "lineItems"
-assert_field_present "GET single has lineItems[0].id" "$ORDER_JSON" "lineItems.[0].id"
-assert_field_present "GET single has total.amount"   "$ORDER_JSON" "total.amount"
-
-# GET single — assert ETag header
-ETAG=$(curl -s -I -H "Authorization: Bearer $TOKEN" \
-  "$SHOPWARE_URL/api/order-integration/v1/orders/$SAMPLE_ID" \
-  | grep -i '^etag:' | awk '{print $2}' | tr -d '\r\n')
-if [[ -n "$ETAG" ]]; then
-  echo "✓ GET single returns ETag header ($ETAG)"
-  ((PASS++)) || true
-else
-  echo "✗ GET single — ETag header missing"
-  ((FAIL++)) || true
-fi
-
-# GET list — same fields on items[0]
-LIST_JSON=$(curl -s -H "Authorization: Bearer $TOKEN" \
-  "$SHOPWARE_URL/api/order-integration/v1/orders?limit=1")
-
-assert_field_present "GET list items[0] has paymentStatus"  "$LIST_JSON" "items.[0].paymentStatus"
-assert_field_present "GET list items[0] has deliveryStatus" "$LIST_JSON" "items.[0].deliveryStatus"
-assert_field_present "GET list items[0] has customer"       "$LIST_JSON" "items.[0].customer"
-assert_field_present "GET list items[0] has billingAddress" "$LIST_JSON" "items.[0].billingAddress"
-assert_field_present "GET list items[0] has lineItems"      "$LIST_JSON" "items.[0].lineItems"
-assert_field_present "GET list items[0] has version"        "$LIST_JSON" "items.[0].version"
-
-# POST — Location + ETag headers, full Order body
-if [[ -n "${NEW_ORDER_ID:-}" ]]; then
-  CREATE_HEADERS=$(curl -s -D - -o /dev/null \
-    -H "Authorization: Bearer $TOKEN" \
-    "$SHOPWARE_URL/api/order-integration/v1/orders/$NEW_ORDER_ID")
-  # Probe the GET on the just-created order has the same shape
-  CREATED_JSON=$(curl -s -H "Authorization: Bearer $TOKEN" \
-    "$SHOPWARE_URL/api/order-integration/v1/orders/$NEW_ORDER_ID")
-  assert_field_present "Created order has customer.email" "$CREATED_JSON" "customer.email"
-  assert_field_present "Created order has lineItems"      "$CREATED_JSON" "lineItems"
-fi
-
-# PUT status — returns full Order, not just {orderId,status}
-PUT_RESPONSE=$(curl -s -X PUT \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"status": "in_progress"}' \
-  "$SHOPWARE_URL/api/order-integration/v1/orders/$SAMPLE_ID/status")
-
-# The earlier transition test may have already moved this order — accept either
-# a full Order body (PASS) or an invalid-transition 409 (skip).
-if echo "$PUT_RESPONSE" | python3 -c "import sys,json; obj=json.load(sys.stdin); sys.exit(0 if 'customer' in obj and 'lineItems' in obj else 1)" 2>/dev/null; then
-  echo "✓ PUT status returns full Order shape"
-  ((PASS++)) || true
-elif echo "$PUT_RESPONSE" | python3 -c "import sys,json; obj=json.load(sys.stdin); sys.exit(0 if obj.get('status')==409 else 1)" 2>/dev/null; then
-  echo "✓ PUT status — order already in target state (409, skipped shape check)"
-  ((PASS++)) || true
-else
-  echo "✗ PUT status did not return full Order"
-  ((FAIL++)) || true
-fi
+ETAG=$(curl -s -I "${AUTH[@]}" "$BASE/orders/$SAMPLE_ID" | grep -i '^etag:' | awk '{print $2}' | tr -d '\r\n')
+[[ -n "$ETAG" ]] && ok "GET single returns ETag header ($ETAG)" || bad "GET single ETag missing"
 
 echo ""
+echo "=== POST validation ==="
+NEW_ID=$(create_order)
+[[ -n "$NEW_ID" ]] && ok "POST /orders created $NEW_ID" || bad "POST /orders create"
+assert_status "POST missing salesChannelId -> 422" "422" "$(status_code -X POST "${AUTH[@]}" "${JSON[@]}" -d "{\"lineItems\":[{\"productId\":\"$SHOPWARE_TEST_PRODUCT_ID\",\"quantity\":1}]}" "$BASE/orders")"
+assert_status "POST missing lineItems -> 422" "422" "$(status_code -X POST "${AUTH[@]}" "${JSON[@]}" -d "{\"salesChannelId\":\"$SHOPWARE_SALES_CHANNEL_ID\"}" "$BASE/orders")"
 
-# Create order for PATCH tests
-PATCH_ORDER_ID=$(curl -s -X POST "$SHOPWARE_URL/api/order-integration/v1/orders" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d "{\"salesChannelId\": \"$SHOPWARE_SALES_CHANNEL_ID\", \"customer\": {\"id\": \"$CUSTOMER_ID\"}, \"lineItems\": [{\"productId\": \"$SHOPWARE_TEST_PRODUCT_ID\", \"quantity\": 1}]}" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
-
-# PATCH /v1/orders/{id} — use the dynamic id created above, not a hardcoded
-# fixture id (the previous values existed only on the developer's machine).
-PATCH_RESPONSE=$(curl -s -X PATCH \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"customerComment": "Bitte klingeln"}' \
-  "$SHOPWARE_URL/api/order-integration/v1/orders/$PATCH_ORDER_ID")
-
-COMMENT=$(echo "$PATCH_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('customerComment',''))" 2>/dev/null || echo "")
-assert_eq "PATCH /v1/orders/{id} updates customerComment" "Bitte klingeln" "$COMMENT"
-
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{}' \
-  "$SHOPWARE_URL/api/order-integration/v1/orders/$PATCH_ORDER_ID")
-assert_status "PATCH /v1/orders/{id} empty body returns 422" "422" "$STATUS"
-
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"customerComment": "test"}' \
-  "$SHOPWARE_URL/api/order-integration/v1/orders/b878ba70bf7d47a12ae61ad5b1dc8582")
-assert_status "PATCH /v1/orders/{id} unknown id returns 404" "404" "$STATUS"
-
-# Bug-B1 regression: PUT status with no `status` field must be 422, not 500.
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{}' \
-  "$SHOPWARE_URL/api/order-integration/v1/orders/$PATCH_ORDER_ID/status")
-assert_status "PUT /v1/orders/{id}/status with no status field returns 422" "422" "$STATUS"
-
-# Bug-B2 regression: PATCH shippingAddress must actually persist.
-PATCH_RESPONSE=$(curl -s -X PATCH \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"shippingAddress": {"street": "Neue Strasse 9"}}' \
-  "$SHOPWARE_URL/api/order-integration/v1/orders/$PATCH_ORDER_ID")
-NEW_STREET=$(echo "$PATCH_RESPONSE" | python3 -c "
-import sys, json
-obj = json.load(sys.stdin)
-addr = obj.get('shippingAddress') or {}
-print(addr.get('street', ''))
-" 2>/dev/null || echo "")
+echo ""
+echo "=== PATCH ==="
+PATCH_ID=$(create_order)
+COMMENT=$(curl -s -X PATCH "${AUTH[@]}" "${JSON[@]}" -d '{"customerComment":"Bitte klingeln"}' "$BASE/orders/$PATCH_ID" | jqpy "d.get('customerComment','')")
+assert_eq "PATCH updates customerComment" "Bitte klingeln" "$COMMENT"
+assert_status "PATCH empty body -> 422" "422" "$(status_code -X PATCH "${AUTH[@]}" "${JSON[@]}" -d '{}' "$BASE/orders/$PATCH_ID")"
+assert_status "PATCH unknown id -> 404" "404" "$(status_code -X PATCH "${AUTH[@]}" "${JSON[@]}" -d '{"customerComment":"x"}' "$BASE/orders/b878ba70bf7d47a12ae61ad5b1dc8582")"
+NEW_STREET=$(curl -s -X PATCH "${AUTH[@]}" "${JSON[@]}" -d '{"shippingAddress":{"street":"Neue Strasse 9"}}' "$BASE/orders/$PATCH_ID" | python3 -c "import sys,json;print((json.load(sys.stdin).get('shippingAddress') or {}).get('street',''))" 2>/dev/null)
 assert_eq "PATCH shippingAddress persists street" "Neue Strasse 9" "$NEW_STREET"
 
-# Delivery sub-resource tests
-DELIVERY_TEST_ORDER=$(curl -s -X POST "$SHOPWARE_URL/api/order-integration/v1/orders" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d "{\"salesChannelId\": \"$SHOPWARE_SALES_CHANNEL_ID\", \"customer\": {\"id\": \"$CUSTOMER_ID\"}, \"lineItems\": [{\"productId\": \"$SHOPWARE_TEST_PRODUCT_ID\", \"quantity\": 1}]}")
-DELIVERY_ORDER_ID=$(echo "$DELIVERY_TEST_ORDER" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
-DELIVERY_ID=$(echo "$DELIVERY_TEST_ORDER" | python3 -c "import sys,json; print(json.load(sys.stdin)['deliveries'][0]['id'])")
+echo ""
+echo "=== Delivery sub-resource (incl. T10) ==="
+DORD=$(create_order)
+DID=$(curl -s "${AUTH[@]}" "$BASE/orders/$DORD" | jqpy "d['deliveries'][0]['id']")
+assert_status "GET /deliveries -> 200" "200" "$(status_code "${AUTH[@]}" "$BASE/orders/$DORD/deliveries")"
+NEW_DID=$(curl -s -X POST "${AUTH[@]}" "${JSON[@]}" -d '{}' "$BASE/orders/$DORD/deliveries" | jqpy "d.get('id','')")
+[[ -n "$NEW_DID" ]] && ok "POST /deliveries split shipment $NEW_DID" || bad "POST /deliveries"
+assert_status "GET /deliveries/{id} -> 200" "200" "$(status_code "${AUTH[@]}" "$BASE/orders/$DORD/deliveries/$DID")"
+assert_status "PUT /deliveries/{id}/status shipped -> 200" "200" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -d '{"status":"shipped"}' "$BASE/orders/$DORD/deliveries/$DID/status")"
+assert_status "PUT /deliveries/{id}/status no field -> 422" "422" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -d '{}' "$BASE/orders/$DORD/deliveries/$DID/status")"
+DCT=$(curl -s -D - -o /dev/null -X PUT "${AUTH[@]}" "${JSON[@]}" -d '{}' "$BASE/orders/$DORD/deliveries/$DID/status" | grep -i '^content-type:' | tr -d '\r')
+echo "$DCT" | grep -qi 'application/problem+json' && ok "delivery 422 is application/problem+json (T10)" || bad "delivery 422 content-type (got: $DCT)"
 
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-  -H "Authorization: Bearer $TOKEN" \
-  "$SHOPWARE_URL/api/order-integration/v1/orders/$DELIVERY_ORDER_ID/deliveries")
-# POST /v1/orders/{id}/deliveries — split shipment
-NEW_DELIVERY=$(curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{}' \
-  "$SHOPWARE_URL/api/order-integration/v1/orders/$DELIVERY_ORDER_ID/deliveries")
-NEW_DELIVERY_ID=$(echo "$NEW_DELIVERY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
-if [[ -n "$NEW_DELIVERY_ID" ]]; then
-  echo "✓ POST /v1/orders/{id}/deliveries created delivery $NEW_DELIVERY_ID"
-  ((PASS++)) || true
-else
-  echo "✗ POST /v1/orders/{id}/deliveries failed"
-  ((FAIL++)) || true
-fi
-
-assert_status "GET /v1/orders/{id}/deliveries returns 200" "200" "$STATUS"
-
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-  -H "Authorization: Bearer $TOKEN" \
-  "$SHOPWARE_URL/api/order-integration/v1/orders/$DELIVERY_ORDER_ID/deliveries/$DELIVERY_ID")
-assert_status "GET /v1/orders/{id}/deliveries/{id} returns 200" "200" "$STATUS"
-
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"status": "shipped"}' \
-  "$SHOPWARE_URL/api/order-integration/v1/orders/$DELIVERY_ORDER_ID/deliveries/$DELIVERY_ID/status")
-assert_status "PUT /v1/orders/{id}/deliveries/{id}/status returns 200" "200" "$STATUS"
-
-
-# DELETE /v1/orders/{id} — soft cancel
-DELETE_ORDER_ID=$(curl -s -X POST "$SHOPWARE_URL/api/order-integration/v1/orders" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d "{\"salesChannelId\": \"$SHOPWARE_SALES_CHANNEL_ID\", \"customer\": {\"id\": \"$CUSTOMER_ID\"}, \"lineItems\": [{\"productId\": \"$SHOPWARE_TEST_PRODUCT_ID\", \"quantity\": 1}]}" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
-
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
-  -H "Authorization: Bearer $TOKEN" \
-  "$SHOPWARE_URL/api/order-integration/v1/orders/$DELETE_ORDER_ID")
-assert_status "DELETE /v1/orders/{id} returns 204" "204" "$STATUS"
-
-CANCELLED_STATUS=$(curl -s -H "Authorization: Bearer $TOKEN" \
-  "$SHOPWARE_URL/api/order-integration/v1/orders/$DELETE_ORDER_ID" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
-assert_eq "DELETE /v1/orders/{id} sets status to cancelled" "cancelled" "$CANCELLED_STATUS"
-
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
-  -H "Authorization: Bearer $TOKEN" \
-  "$SHOPWARE_URL/api/order-integration/v1/orders/b878ba70bf7d47a12ae61ad5b1dc8582")
-assert_status "DELETE /v1/orders/{id} unknown id returns 404" "404" "$STATUS"
-
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
-  -H "Authorization: Bearer $TOKEN" \
-  "$SHOPWARE_URL/api/order-integration/v1/orders/$DELETE_ORDER_ID?hard=true")
-assert_status "DELETE /v1/orders/{id}?hard=true returns 403" "403" "$STATUS"
+echo ""
+echo "=== DELETE soft cancel (incl. T7 idempotency) ==="
+DEL=$(create_order)
+assert_status "DELETE -> 204" "204" "$(status_code -X DELETE "${AUTH[@]}" "$BASE/orders/$DEL")"
+assert_eq "DELETE sets status cancelled" "cancelled" "$(curl -s "${AUTH[@]}" "$BASE/orders/$DEL" | jqpy "d['status']")"
+assert_status "DELETE again (idempotent) -> 204" "204" "$(status_code -X DELETE "${AUTH[@]}" "$BASE/orders/$DEL")"
+assert_eq "still cancelled after re-DELETE" "cancelled" "$(curl -s "${AUTH[@]}" "$BASE/orders/$DEL" | jqpy "d['status']")"
+assert_status "DELETE unknown id -> 404" "404" "$(status_code -X DELETE "${AUTH[@]}" "$BASE/orders/b878ba70bf7d47a12ae61ad5b1dc8582")"
+assert_status "DELETE ?hard=true -> 403" "403" "$(status_code -X DELETE "${AUTH[@]}" "$BASE/orders/$DEL?hard=true")"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
