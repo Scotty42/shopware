@@ -113,6 +113,17 @@ Phase 5 introduces the dedicated mTLS + OAuth 2.0 client-credentials + API-key s
 
 ![Shopware Admin — Order status transitions applied via API](docs/assets/Order_State.png)
 
+> **Request requirements on mutations (since backlog T2/T3).** Every mutating
+> order endpoint (`POST`/`PUT`/`PATCH`/`DELETE` on `/orders` and the status
+> sub-routes) requires an **`Idempotency-Key`** header — missing → `400`
+> (`order.idempotency_key_required`), replay of the same key+body returns the
+> original response, same key + different body → `409`
+> (`order.idempotency_key_reused`). `PUT`/`PATCH`/`DELETE` additionally require
+> an **`If-Match`** header carrying the current `ETag` — missing → `428`
+> (`order.precondition_required`), stale → `412` (`order.precondition_failed`).
+> `POST /orders` needs only `Idempotency-Key` (no resource to match yet). The
+> ERP and delivery sub-resources are not yet wired for these headers (follow-up).
+
 ### Orders
 
 | Method | Path | Description |
@@ -141,16 +152,29 @@ Phase 5 introduces the dedicated mTLS + OAuth 2.0 client-credentials + API-key s
 | `PATCH` | `/api/order-integration/v1/orders/{id}/deliveries/{did}` | Update tracking codes, shipping method |
 | `PUT` | `/api/order-integration/v1/orders/{id}/deliveries/{did}/status` | Delivery state transition |
 
+### ERP pull-sync (T12)
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/order-integration/v1/erp/orders` | Pull queue — orders not yet acknowledged by the ERP (optional `?status=`), FIFO, cursor-paginated |
+| `POST` | `/api/order-integration/v1/erp/orders/acknowledge` | Mark a batch (1–500) of orders as forwarded to the ERP; sets `customFields.erpSyncedAt` (idempotent) |
+
+The "known to ERP" flag lives in `order.customFields.erpSyncedAt` (ISO
+timestamp) — no migration, filterable via the DAL. See
+`docs/erp-pull-sync-concept.md`.
+
 ### GET /orders — query parameters
 
 | Parameter | Type | Default | Validation |
 |---|---|---|---|
 | `limit` | int | 50 | 1–200 |
 | `status` | string | — | `open`, `in_progress`, `completed`, `cancelled` |
-| `customerId` | string | — | 32-char hex |
+| `sort` | string | `createdAt:desc` | `(createdAt\|updatedAt\|orderNumber):(asc\|desc)` (T4) |
+| `customerId` | string | — | 32-char hex **or** canonical UUID, normalized server-side (T6) |
+| `salesChannelId` | string | — | 32-char hex (T5) |
 | `createdAfter` | ISO 8601 | — | valid date-time |
 | `createdBefore` | ISO 8601 | — | valid date-time |
-| `cursor` | string | — | base64-encoded pagination cursor |
+| `cursor` | string | — | base64-encoded keyset cursor |
 
 Invalid parameters return `422 Unprocessable Content` with RFC 9457 `errors[]` array.
 
@@ -166,6 +190,10 @@ Every order response returns the spec-compliant `Order` payload from `docs/order
 ### Error model
 
 All errors use RFC 9457 `application/problem+json` with `type`, `title`, `status`, `detail`, `code`. Validation errors include an `errors[]` array with JSON Pointer references.
+
+Codes added by the cross-cutting backlog items: `400 order.idempotency_key_required`,
+`409 order.idempotency_key_reused` (T2), `428 order.precondition_required`,
+`412 order.precondition_failed` (T3).
 
 ---
 
@@ -236,7 +264,9 @@ vendor/bin/phpunit            # full unit suite
 composer test:unit            # alias
 ```
 
-Coverage: `QueryValidator`, `StateMachineService` (mapping + exception translation), `OrderMapper` (associations contract + ETag stability + payload keys). See `tests/Unit/`.
+Coverage (pure-logic seams): `QueryValidator`, `StateMachineService`, `OrderMapper`,
+`IdempotencyService`, `EtagComparator`, `SoftDeletePolicy`, `OrderCreateValidator`,
+`ExceptionSubscriber`, `ErpSyncPolicy`. See `tests/Unit/` and `docs/testing.md` for the full layer breakdown.
 
 **Integration tests (Bash)** — requires a live Shopware backend with the plugin installed:
 
@@ -269,9 +299,11 @@ rm -rf /var/www/shopware/var/cache/*
 | **1 (done)** | Plugin skeleton, `GET /v1/orders` + `GET /v1/orders/{id}`, cursor pagination, filters, RFC 9457 errors, Shopware OAuth 2.0 (password + client credentials), QueryValidator |
 | **2 (done)** | `PUT` status transitions (order, payment, delivery), `POST /v1/orders` via CartService + OrderPersister, OrderMapper, `Location` + `ETag` headers, full spec-compliant `Order` shape |
 | **3 (done)** | `PATCH /v1/orders/{id}`, `DELETE /v1/orders/{id}` (soft cancel), Delivery sub-resource (list, get, create-split, patch tracking, status transition) — line-item allocation (`positions`) and richer PATCH fields remain for a follow-up |
-| **4** | Read projection fed by Shopware business events — decouple read traffic from Shopware DB |
-| **4b** | **ERP integration (primary integration)** — outbound `order.created` webhook to ERP, inbound batched `POST /shipment-events` for FFP-driven shipment status & tracking (see `docs/order-api-concept.md` §7a) |
-| **5 (in progress)** | PHPUnit test suite + GitHub Actions CI (**done**). Dedicated auth (API key / mTLS), ACL role-based scopes, idempotency store, rate limiting — open. |
+| **Hardening (done — backlog T1–T11)** | Idempotency-Key enforcement (T2), If-Match/ETag optimistic concurrency (T3), `sort` (T4) + `salesChannelId` (T5) + `customerId` UUID (T6) on list, soft-delete correctness (T7), POST validation (T8), mapper delivery consistency (T9), delivery 422 problem+json (T10), HTTP/CI test coverage (T11), doc alignment (T1). See `docs/BACKLOG.md`. |
+| **ERP pull-sync (done — T12)** | `GET /v1/erp/orders` pull queue + `POST /v1/erp/orders/acknowledge` with the `erpSyncedAt` flag (see `docs/erp-pull-sync-concept.md`). Complements the webhook/`shipment-events` design in §7a, which remains a follow-up. |
+| **4** | Read projection fed by Shopware business events — decouple read traffic from Shopware DB (concept §2 Phase 2; CQRS branch in review) |
+| **4b** | **ERP webhook path** — outbound `order.created` webhook, inbound batched `POST /shipment-events` for FFP-driven shipment status & tracking (see `docs/order-api-concept.md` §7a) |
+| **5** | Write queue + async workers (concept §2 Phase 3; CQRS branch in review). Dedicated auth (API key / mTLS), ACL role-based scopes, rate limiting — open. |
 
 ---
 
@@ -280,5 +312,8 @@ rm -rf /var/www/shopware/var/cache/*
 - `docs/order-api-concept.md` — full architecture analysis, Options A/B/C, ERP integration design, security model
 - `docs/order-api-openapi.yaml` — OpenAPI 3.1 spec for the full target API surface
 - `docs/spike-order-creation.md` — analysis of four order-creation paths in Shopware 6
+- `docs/erp-pull-sync-concept.md` — ERP pull queue + acknowledge flag design (T12)
+- `docs/testing.md` — unit vs. integration test layers and the CI gap
+- `docs/BACKLOG.md` — the hardening backlog (T1–T11) with per-task rationale
 
 

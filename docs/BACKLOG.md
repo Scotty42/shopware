@@ -7,6 +7,13 @@ umgesetzt und als separater PR gegen `main` gedacht.
 Legende Typ: **bug** = Fehlverhalten · **spec-drift** = OpenAPI verspricht
 mehr als der Code hält · **doc** = Doku ↔ Realität · **test** = Abdeckung.
 
+**Umsetzungsstand (Stand dieser Revision):** T1–T11 sowie T12 (ERP pull-sync)
+und die Cross-Cutting-PRs T2 (Idempotency-Key) und T3 (If-Match) sind in `main`
+gemergt und durch `tests/api_test.sh` + die PHPUnit-Suite abgedeckt. Offen:
+T13 (CQRS Read-Projection + Write-Queue, Infrastruktur) — separater PR. Spätere
+Follow-ups: ERP-Webhook/`shipment-events` (Konzept §7a), Rate-Limiting,
+dedizierte Auth (mTLS/API-Key), Idempotenz/If-Match auch auf der Delivery-Sub-Resource.
+
 | ID | Titel | Typ | Schwere | Branch |
 |----|-------|-----|---------|--------|
 | T1 | "Option C"-Namenskollision Konzept ↔ README | doc | mittel | `docs/t1-option-c-naming` |
