@@ -22,6 +22,7 @@ use Symfony\Component\HttpFoundation\Request;
  */
 final class CqrsGateway
 {
+    private readonly bool $dbConfigured;
     private readonly bool $asyncWritesDefault;
     private readonly bool $projectionReadsEnabled;
 
@@ -29,13 +30,23 @@ final class CqrsGateway
         private readonly WriteQueueInterface $queue,
         private readonly ReadProjectionInterface $projection,
         private readonly BackpressurePolicy $backpressure,
+        PdoConnectionProvider $connection,
     ) {
-        $this->asyncWritesDefault = self::flag('ORDER_INTEGRATION_ASYNC_WRITES');
-        $this->projectionReadsEnabled = self::flag('ORDER_INTEGRATION_PROJECTION_READS');
+        // The CQRS paths are inert unless a read/queue DB is actually configured.
+        // This prevents the footgun where ORDER_INTEGRATION_ASYNC_WRITES=true is
+        // set without ORDER_INTEGRATION_DB_DSN — which would otherwise route every
+        // write into the queue and fail with 500. No DSN => stay fully synchronous.
+        $this->dbConfigured = $connection->isConfigured();
+        $this->asyncWritesDefault = $this->dbConfigured && self::flag('ORDER_INTEGRATION_ASYNC_WRITES');
+        $this->projectionReadsEnabled = $this->dbConfigured && self::flag('ORDER_INTEGRATION_PROJECTION_READS');
     }
 
     public function wantsAsyncWrite(Request $request): bool
     {
+        if (!$this->dbConfigured) {
+            return false; // no read/queue DB configured -> always synchronous
+        }
+
         $prefer = strtolower((string) $request->headers->get('Prefer', ''));
         if (str_contains($prefer, 'respond-async')) {
             return true;

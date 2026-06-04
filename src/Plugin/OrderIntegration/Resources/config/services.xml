@@ -135,6 +135,7 @@
             <argument type="service" id="Scotty42\OrderIntegration\Cqrs\Write\WriteQueueInterface"/>
             <argument type="service" id="Scotty42\OrderIntegration\Cqrs\Read\ReadProjectionInterface"/>
             <argument type="service" id="Scotty42\OrderIntegration\Cqrs\Write\BackpressurePolicy"/>
+            <argument type="service" id="Scotty42\OrderIntegration\Cqrs\PdoConnectionProvider"/>
         </service>
 
         <service id="Scotty42\OrderIntegration\Cqrs\Read\OrderProjectionWriter">
