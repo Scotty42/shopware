@@ -79,7 +79,7 @@ Four options were evaluated (see `docs/order-api-concept.md` and `docs/spike-ord
 |---|---|---|
 | **A** | Callers hit the Shopware Admin API directly | Rejected — tight coupling, not suitable for D2C load |
 | **B** | Standalone facade service in front of the Admin API | Viable for low volume; first step toward Option C |
-| **C** | Standalone facade **+ read projection (CQRS) + write queue** (the load-aware variant in `docs/order-api-concept.md` §2) | Target infra/load architecture — not yet built; tracked on the infra axis (README Phase 4/5 ↔ concept Phase 2/3) |
+| **C** | Standalone facade **+ read projection (CQRS) + write queue** (the load-aware variant in `docs/order-api-concept.md` §2) | Built **inside the plugin** in T13 (off by default, env-gated). The infra/load axis on top of Option D — see `docs/cqrs-write-queue-concept.md`. |
 | **D** | **Plugin inside Shopware** using internal services (this repo) | **Chosen for the endpoint layer** — lowest latency, no extra hop, uses Shopware's own pricing/checkout code |
 
 > **Note on naming.** Earlier revisions of this README labelled the plugin
@@ -312,7 +312,7 @@ rm -rf /var/www/shopware/var/cache/*
 | **ERP pull-sync (done — T12)** | `GET /v1/erp/orders` pull queue + `POST /v1/erp/orders/acknowledge` with the `erpSyncedAt` flag (see `docs/erp-pull-sync-concept.md`). Complements the webhook/`shipment-events` design in §7a, which remains a follow-up. |
 | **4 (done — T13)** | Read projection fed by Shopware `order.written`/`order.deleted` events — decouples read traffic from the shop DB (Postgres JSONB; concept §2 Phase 2). Off by default via `ORDER_INTEGRATION_PROJECTION_READS`. |
 | **4b** | **ERP webhook path** — outbound `order.created` webhook, inbound batched `POST /shipment-events` for FFP-driven shipment status & tracking (see `docs/order-api-concept.md` §7a) |
-| **5 (partial — T13)** | Write queue + bounded async workers (Postgres `SKIP LOCKED`, retry, backpressure; concept §2 Phase 3), off by default via `ORDER_INTEGRATION_ASYNC_WRITES`. Dedicated auth (API key / mTLS), ACL scopes, rate limiting — still open. |
+| **5 (partial — T13)** | Write queue + bounded async workers (Postgres `SKIP LOCKED`, retry, backpressure; concept §2 Phase 3), off by default via `ORDER_INTEGRATION_ASYNC_WRITES`. Validated end-to-end on the BE and A/B-benchmarked (`docs/benchmark.md`): client-visible write p95 −80%, reads up to +191% throughput; worker count scales drain time ~linearly. Dedicated auth (API key / mTLS), ACL scopes, rate limiting — still open. |
 
 ---
 
@@ -321,6 +321,11 @@ rm -rf /var/www/shopware/var/cache/*
 For production traffic with **parallel writes**, the plugin can run the
 load-aware variant (Option C in `docs/order-api-concept.md` §2): a denormalized
 **read projection** and a durable **write queue** with a bounded worker pool.
+
+> **Status:** built and merged (T13), **off by default**. Activated and
+> A/B-benchmarked on the BE — see the measured sync-vs-async results in
+> `docs/benchmark.md`. Setup (Postgres LXC, schema, env, templated workers) is in
+> `docs/infrastructure-setup.md`.
 
 - **Write queue** — `POST /v1/orders` is durably accepted and answered with
   `202 Accepted` + a job URL; a worker pool (`bin/console
