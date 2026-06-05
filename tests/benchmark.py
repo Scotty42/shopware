@@ -35,13 +35,21 @@ from urllib import request, error
 
 
 def load_env(path):
+    """Parse a .env file the way `source` would: tolerate `export KEY=...` and
+    strip surrounding single/double quotes from the value."""
     env = {}
     if os.path.exists(path):
         for line in open(path):
             line = line.strip()
-            if line and not line.startswith('#') and '=' in line:
-                k, v = line.split('=', 1)
-                env[k.strip()] = v.strip()
+            if not line or line.startswith('#') or '=' not in line:
+                continue
+            if line.startswith('export '):
+                line = line[len('export '):]
+            k, v = line.split('=', 1)
+            v = v.strip()
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
+                v = v[1:-1]
+            env[k.strip()] = v
     return env
 
 
@@ -104,7 +112,11 @@ class Bench:
         })
         st, _, payload = http('POST', self.base_root + '/api/oauth/token', body=body)
         if st != 200:
-            sys.exit(f'auth failed (HTTP {st}). Is SHOPWARE_URL reachable and are the admin creds correct?')
+            sys.exit(
+                f"auth failed (HTTP {st}) at {self.base_root}/api/oauth/token "
+                f"as user '{self.env['SHOPWARE_ADMIN_USER']}'. "
+                f"Server said: {payload.decode(errors='replace')[:300]}"
+            )
         self.token = json.loads(payload)['access_token']
 
     def prepare(self, want_read_ids):
