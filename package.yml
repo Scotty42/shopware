@@ -1,0 +1,45 @@
+name: Package
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'   # v1.0.0
+      - '[0-9]+.[0-9]+.[0-9]+*'    # 1.0.0
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to attach the zip to a GitHub Release on tags
+
+jobs:
+  build-zip:
+    name: Build OrderIntegration plugin zip
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so git archive + tags resolve
+
+      - name: Build plugin package
+        run: bash bin/build-plugin-zip.sh
+
+      - name: Resolve package filename
+        id: pkg
+        run: echo "file=$(ls OrderIntegration-*.zip | head -1)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: order-integration-plugin
+          path: OrderIntegration-*.zip
+          if-no-files-found: error
+
+      - name: Attach to GitHub Release (any tag)
+        if: ${{ github.ref_type == 'tag' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "${{ steps.pkg.outputs.file }}" \
+            --title "$GITHUB_REF_NAME" --generate-notes \
+          || gh release upload "$GITHUB_REF_NAME" "${{ steps.pkg.outputs.file }}" --clobber
