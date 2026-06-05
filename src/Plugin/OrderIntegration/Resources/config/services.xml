@@ -62,8 +62,17 @@
             <argument type="service" id="tag.repository"/>
         </service>
 
+        <!-- Dedicated, shared, persistent pool for idempotency records. Must NOT
+             be cache.app: that pool can be process-local (APCu) and/or pruned by
+             Shopware's cache invalidation on order writes, which would break
+             cross-request replay/conflict detection. FilesystemAdapter is shared
+             across FPM workers and survives cache:clear. -->
+        <service id="order_integration.idempotency_cache" class="Symfony\Component\Cache\Adapter\FilesystemAdapter">
+            <argument>order_integration_idempotency</argument>
+        </service>
+
         <service id="Scotty42\OrderIntegration\Idempotency\Psr6IdempotencyStore">
-            <argument type="service" id="cache.app"/>
+            <argument type="service" id="order_integration.idempotency_cache"/>
         </service>
 
         <service id="Scotty42\OrderIntegration\Service\IdempotencyService">
