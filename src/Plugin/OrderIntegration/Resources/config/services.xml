@@ -146,6 +146,8 @@
         <service id="Scotty42\OrderIntegration\Cqrs\Read\OrderProjectionSubscriber">
             <argument type="service" id="order.repository"/>
             <argument type="service" id="Scotty42\OrderIntegration\Cqrs\Read\OrderProjectionWriter"/>
+            <argument type="service" id="Scotty42\OrderIntegration\Cqrs\PdoConnectionProvider"/>
+            <argument type="service" id="logger"/>
             <tag name="kernel.event_subscriber"/>
         </service>
 
