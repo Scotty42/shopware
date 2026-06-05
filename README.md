@@ -221,22 +221,57 @@ Codes added by the cross-cutting backlog items: `400 order.idempotency_key_requi
 
 ## Installation
 
+### Development (symlink)
+
+For working on the plugin, symlink the repo into Shopware so edits are live:
+
 ```bash
-# 1. Clone into the Shopware container
+# 1. Clone next to the Shopware install
 git clone git@github.com:Scotty42/shopware.git /var/www/shopware_development
 
 # 2. Symlink into Shopware
 ln -s /var/www/shopware_development /var/www/shopware/custom/plugins/OrderIntegration
 
-# 3. Set correct ownership
+# 3. Ownership + activate
 chown -R www-data:www-data /var/www/shopware/var/
-
-# 4. Register and activate plugin
 cd /var/www/shopware
 ./bin/console plugin:refresh
 ./bin/console plugin:install --activate OrderIntegration
 ./bin/console cache:clear
 ```
+
+### Stage / production (packaged plugin)
+
+For a stage or production system, install a versioned **package** instead of a
+symlink. Build the zip from the repo:
+
+```bash
+bin/build-plugin-zip.sh            # -> OrderIntegration-<version>.zip
+# bin/build-plugin-zip.sh v1.0.0 /tmp   # optional: package a specific tag, custom output dir
+```
+
+The zip contains a single `OrderIntegration/` folder (composer.json + `src/` +
+`LICENSE`); dev-only paths (tests, CI, docs, `.env*`) are excluded via
+`.gitattributes` `export-ignore`. It bundles no `vendor/` — the plugin has no
+runtime composer dependencies (`shopware/core` is provided by the host).
+
+Install it either way:
+
+**Admin UI** — Extensions → My extensions → *Upload extension* → select the zip →
+**Install** → **Activate**.
+
+**CLI:**
+```bash
+unzip OrderIntegration-<version>.zip -d /var/www/shopware/custom/plugins/
+cd /var/www/shopware
+chown -R www-data:www-data custom/plugins/OrderIntegration var/
+./bin/console plugin:refresh
+./bin/console plugin:install --activate OrderIntegration
+./bin/console cache:clear
+```
+
+> Don't mix the two: remove the dev symlink before installing the packaged
+> plugin on the same instance.
 
 ---
 
@@ -351,6 +386,16 @@ provisioning, PostgreSQL config, schema, env for testing (`.env.test` /
 `.env.test.dist`) and production, and the worker service — is documented in
 `docs/infrastructure-setup.md`.** Design rationale is in
 `docs/cqrs-write-queue-concept.md`.
+
+---
+
+## License
+
+Licensed under the **PolyForm Noncommercial License 1.0.0** — see `LICENSE`.
+Noncommercial use (personal, evaluation, research/education, internal testing,
+non-profit) is permitted; **any commercial use requires a separate written
+license** from the author. Contact: Dr.-Ing. Markus Friedrich
+(markus.friedrich.mobil@gmail.com).
 
 ---
 
