@@ -57,6 +57,7 @@ def http(method, url, token=None, body=None, headers=None, timeout=30):
     """Return (status, elapsed_ms, body_bytes). Never raises on HTTP errors."""
     data = body.encode() if isinstance(body, str) else body
     req = request.Request(url, data=data, method=method)
+    req.add_header('Accept', 'application/json')
     if token:
         req.add_header('Authorization', 'Bearer ' + token)
     if data is not None:
@@ -121,7 +122,16 @@ class Bench:
 
     def prepare(self, want_read_ids):
         st, _, p = http('GET', self.base_root + '/api/customer?limit=1', self.token)
-        self.customer_id = json.loads(p)['data'][0]['id']
+        try:
+            doc = json.loads(p)
+        except Exception:
+            doc = {}
+        if st != 200 or not isinstance(doc, dict) or not doc.get('data'):
+            sys.exit(
+                f"could not read a customer (HTTP {st}) from {self.base_root}/api/customer?limit=1. "
+                f"Server said: {p.decode(errors='replace')[:300]}"
+            )
+        self.customer_id = doc['data'][0]['id']
         ids, cursor = [], None
         while len(ids) < want_read_ids:
             url = self.base + '/orders?limit=200' + (f'&cursor={cursor}' if cursor else '')
