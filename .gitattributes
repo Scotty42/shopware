@@ -1,0 +1,11 @@
+# Keep the built plugin package lean: exclude dev-only paths from `git archive`
+# (used by bin/build-plugin-zip.sh). LICENSE, README and src/ are kept.
+/tests              export-ignore
+/.github            export-ignore
+/docs               export-ignore
+/.gitignore         export-ignore
+/.gitattributes     export-ignore
+/.env.test          export-ignore
+/.env.test.dist     export-ignore
+/phpunit.xml.dist   export-ignore
+/bin                export-ignore
