@@ -158,17 +158,16 @@ Recommended rollout (matches `order-api-concept.md` §2):
 
 ## 5. Worker (on the shopware-be LXC)
 
-Run one or more drain workers (SKIP LOCKED keeps them from colliding):
+Drain workers apply queued commands to Shopware. `FOR UPDATE SKIP LOCKED` lets
+several workers drain in parallel without ever claiming the same command twice,
+so scaling throughput is just "run more instances".
 
-```bash
-php /var/www/shopware/bin/console order-integration:write-queue:drain --sleep=1
-```
-
-systemd unit on the BE container (`/etc/systemd/system/order-integration-worker.service`):
+Use a **templated** systemd unit so N workers come from one file —
+`/etc/systemd/system/order-integration-worker@.service`:
 
 ```ini
 [Unit]
-Description=Order Integration write-queue worker
+Description=Order Integration write-queue worker #%i
 After=network.target
 
 [Service]
@@ -177,18 +176,35 @@ WorkingDirectory=/var/www/shopware
 ExecStart=/usr/bin/php bin/console order-integration:write-queue:drain --sleep=1
 Restart=always
 RestartSec=2
+SyslogIdentifier=oi-worker-%i
 
 [Install]
 WantedBy=multi-user.target
 ```
 
+`%i` is the instance id (1, 2, …); it only labels the description/log tag — the
+drain command is identical for every instance.
+
 ```bash
-systemctl enable --now order-integration-worker
+systemctl daemon-reload
+# run two workers (add @3, @4, … to scale further)
+systemctl enable --now order-integration-worker@1.service order-integration-worker@2.service
+systemctl status 'order-integration-worker@*'
+journalctl -fu 'order-integration-worker@1' -fu 'order-integration-worker@2'
 ```
 
-Scale throughput by enabling several instances (a templated
-`order-integration-worker@.service`, or copies `@1`, `@2`, …) — each claims
-disjoint batches thanks to SKIP LOCKED.
+End-to-end queue-drain time scales roughly linearly with the worker count, as
+long as Shopware (not the CQRS DB) is the bottleneck: in the reference benchmark,
+1 → 2 workers roughly halved the write-completion p95 (see `docs/benchmark.md`).
+`--sleep=1` avoids a busy-loop when the queue is empty; `--sleep=0` squeezes out
+a little more throughput under constant load at the cost of idle CPU.
+
+> Migrating from an earlier single `order-integration-worker.service`:
+> ```bash
+> systemctl disable --now order-integration-worker.service
+> rm -f /etc/systemd/system/order-integration-worker.service
+> ```
+> then install the template above and enable `@1`, `@2`.
 
 ## 6. Operational notes
 

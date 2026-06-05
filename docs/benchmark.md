@@ -58,3 +58,36 @@ write queue is designed for more visible.
 
 > The benchmark mutates data (creates orders). Run it against a test/staging
 > Shopware, not production.
+
+## Observed results (reference)
+
+A single reference run on the LXC dev setup — workload **300 writes + 1500 reads
+at concurrency 24** (`--writes 300 --reads 1500 --concurrency 24`). Treat these
+as a *shape*, not a guarantee; re-measure on your hardware.
+
+| Metric | Baseline (sync) | CQRS async · 1 worker | CQRS async · 2 workers |
+|---|---:|---:|---:|
+| Write throughput (req/s) | 18.3 | 76.6 | 99.4 |
+| Write latency p50 / p95 (ms) — client-visible | 1282 / 1633 | 302 / 384 | 229 / 310 |
+| Read throughput (req/s) | 44.0 | 84.6 | 128.1 |
+| Read latency p50 / p95 (ms) | 393 / 879 | 276 / 355 | 179 / 265 |
+| Write **end-to-end** completion p95 (ms) | ≈ write latency (~1.6 s) | 94 632 | 40 662 |
+| Errors | 0 | 0 | 0 |
+
+Reading the numbers:
+
+- **Client-visible writes** get much faster and tighter — enqueue p95 −76…−81 %,
+  throughput up to +443 %. The API stops blocking for the full Shopware order
+  creation and just records + queues.
+- **Reads** improve too (throughput up to +191 %, p95 −70 %). The gain is solid
+  but bounded by fixed per-request overhead (HTTP, token validation, kernel boot)
+  that sits on top of the saved DB time.
+- **End-to-end write completion is the eventual-consistency cost**: a burst of
+  300 queued writes takes tens of seconds to fully apply. It scales ~linearly
+  with workers — **1 → 2 workers roughly halved the completion p95 (94.6 s →
+  40.7 s)**. Add workers until Shopware (not the CQRS DB) is the bottleneck.
+- **Zero errors in every run at concurrency 24** — Shopware coped synchronously,
+  so the queue's *saturation protection* is not visible here. It shows at higher
+  concurrency (e.g. `--concurrency 96/150`), where the sync path starts erroring
+  / timing out while the async enqueue stays flat. That is the load level at
+  which the write queue earns its keep.
