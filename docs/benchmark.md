@@ -42,6 +42,15 @@ Keep `--writes/--reads/--concurrency` identical across both runs so the
 comparison is apples-to-apples. Raise `--concurrency` to make the contention the
 write queue is designed for more visible.
 
+> **Write path is forced per request.** The benchmark sends
+> `Prefer: respond-sync` in baseline mode and `Prefer: respond-async` with
+> `--async`, so the write side is correct **regardless of the server's
+> `ORDER_INTEGRATION_ASYNC_WRITES` flag** (otherwise a stray `=true` would make
+> the "baseline" silently measure the async enqueue path). The **read** path has
+> no per-request override — to compare DAL vs projection reads you must still set
+> `ORDER_INTEGRATION_PROJECTION_READS` (false for baseline, true for the CQRS run)
+> on the server and `cache:clear`.
+
 ## How to read it
 
 - **Reads** should get dramatically faster and higher-throughput in *cqrs* mode

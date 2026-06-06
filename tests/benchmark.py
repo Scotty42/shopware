@@ -155,9 +155,13 @@ class Bench:
         })
 
     def one_write(self, async_mode):
-        headers = {'Idempotency-Key': str(uuid.uuid4())}
-        if async_mode:
-            headers['Prefer'] = 'respond-async'
+        # Force the path per-request via Prefer, so the baseline is truly
+        # synchronous even if ORDER_INTEGRATION_ASYNC_WRITES=true is set on the
+        # server (otherwise "baseline" would silently measure the async enqueue).
+        headers = {
+            'Idempotency-Key': str(uuid.uuid4()),
+            'Prefer': 'respond-async' if async_mode else 'respond-sync',
+        }
         st, ms, payload = http('POST', self.base + '/orders', self.token, self.order_body(), headers)
         job_id = None
         if async_mode and st == 202:
