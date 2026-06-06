@@ -387,6 +387,28 @@ provisioning, PostgreSQL config, schema, env for testing (`.env.test` /
 `docs/infrastructure-setup.md`.** Design rationale is in
 `docs/cqrs-write-queue-concept.md`.
 
+### Measured impact (sync vs async CQRS)
+
+A/B benchmark on the BE (`tests/benchmark.py`) — 300 writes + 1500 reads at
+concurrency 24, synchronous baseline vs async CQRS with 2 drain workers:
+
+| Metric | Baseline (sync) | CQRS async (2 workers) |
+|---|---:|---:|
+| Write throughput (req/s) | 18.3 | 99.4 (+443%) |
+| Write latency p95 — client-visible (ms) | 1633 | 310 (−81%) |
+| Read throughput (req/s) | 44.0 | 128.1 (+191%) |
+| Read latency p95 (ms) | 879 | 265 (−70%) |
+| Write **end-to-end** completion p95 (ms) | ~1 600 (sync) | ~40 700 (queued) |
+| Errors | 0 | 0 |
+
+The API becomes far more responsive under write load (enqueue p95 −81%,
+throughput +443%) and projection reads are ~2× faster. The cost is **eventual
+consistency**: a burst of queued writes takes tens of seconds to fully apply,
+scaling ~linearly with worker count (1 → 2 workers roughly halved completion
+time). At this concurrency neither path errored — the queue's *saturation
+protection* shows at higher load. Full table, 1-worker numbers and how to
+reproduce: `docs/benchmark.md`.
+
 ---
 
 ## License
@@ -407,6 +429,8 @@ license** from the author. Contact: Dr.-Ing. Markus Friedrich
 - `docs/erp-pull-sync-concept.md` — ERP pull queue + acknowledge flag design (T12)
 - `docs/testing.md` — unit vs. integration test layers and the CI gap
 - `docs/BACKLOG.md` — the hardening backlog (T1–T11) with per-task rationale
+- `docs/benchmark.md` — A/B load benchmark tool + observed sync-vs-async results
+- `docs/release.md` — versioning, tagging, and the packaging/release workflow
 - `docs/cqrs-write-queue-concept.md` — CQRS read projection + write-queue design (Option C / T13)
 - `docs/infrastructure-setup.md` — read/queue DB LXC, schema, env, and worker setup (T13)
 
