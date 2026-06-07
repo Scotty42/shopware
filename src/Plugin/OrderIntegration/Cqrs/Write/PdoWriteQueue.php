@@ -147,6 +147,16 @@ final class PdoWriteQueue implements WriteQueueInterface
         return (int) $stmt->fetchColumn();
     }
 
+    public function purge(string $status, \DateTimeImmutable $olderThan): int
+    {
+        $stmt = $this->connection->pdo()->prepare(
+            'DELETE FROM order_write_queue WHERE status = :s AND updated_at < :ts'
+        );
+        $stmt->execute(['s' => $status, 'ts' => $olderThan->format('c')]);
+
+        return $stmt->rowCount();
+    }
+
     private function findByIdempotencyKey(string $key): ?WriteCommand
     {
         $stmt = $this->connection->pdo()->prepare('SELECT * FROM order_write_queue WHERE idempotency_key = :k');

@@ -28,3 +28,5 @@ CREATE TABLE IF NOT EXISTS order_write_queue (
     updated_at      TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_owq_claim ON order_write_queue (status, available_at, created_at);
+-- supports the retention purge (DELETE WHERE status = ... AND updated_at < ...)
+CREATE INDEX IF NOT EXISTS idx_owq_purge ON order_write_queue (status, updated_at);

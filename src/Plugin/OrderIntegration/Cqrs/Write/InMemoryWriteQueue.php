@@ -99,6 +99,22 @@ final class InMemoryWriteQueue implements WriteQueueInterface
         return $n;
     }
 
+    public function purge(string $status, \DateTimeImmutable $olderThan): int
+    {
+        $n = 0;
+        foreach ($this->commands as $id => $c) {
+            if ($c->status === $status && $c->updatedAt !== null && $c->updatedAt < $olderThan) {
+                unset($this->commands[$id]);
+                if ($c->idempotencyKey !== null) {
+                    unset($this->byIdempotencyKey[$c->idempotencyKey]);
+                }
+                $n++;
+            }
+        }
+
+        return $n;
+    }
+
     private function require(string $id): WriteCommand
     {
         if (!isset($this->commands[$id])) {
