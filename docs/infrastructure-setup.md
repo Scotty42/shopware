@@ -107,6 +107,8 @@ CREATE TABLE IF NOT EXISTS order_write_queue (
 );
 -- the claim() query filters on (status, available_at) ordered by created_at
 CREATE INDEX IF NOT EXISTS idx_owq_claim ON order_write_queue (status, available_at, created_at);
+-- supports the retention purge
+CREATE INDEX IF NOT EXISTS idx_owq_purge ON order_write_queue (status, updated_at);
 ```
 
 The Shopware BE container needs the PostgreSQL PDO driver:
@@ -205,6 +207,59 @@ a little more throughput under constant load at the cost of idle CPU.
 > rm -f /etc/systemd/system/order-integration-worker.service
 > ```
 > then install the template above and enable `@1`, `@2`.
+
+## 6.5 Retention & cleanup
+
+The two tables behave oppositely:
+
+- **`order_read_projection` — bounded, no time-based cleanup.** One row per
+  order (upsert on `order.written`, delete on `order.deleted`), so it tracks the
+  Shopware order count and follows your order / GDPR retention automatically.
+  Only consider a periodic **reconciliation** if orders are ever purged outside
+  the DAL (raw SQL), which would leave orphan rows:
+  ```sql
+  -- orphans: projection rows whose order no longer exists (run against Shopware DB-aware tooling,
+  -- or re-backfill the projection from OrderProjectionWriter::apply over all orders)
+  ```
+
+- **`order_write_queue` — grows unbounded, needs periodic purge.** The worker
+  marks finished commands `succeeded` / `dead` but never deletes them. Purge old
+  terminal rows on a schedule (active `queued` / `in_progress` rows are never
+  touched):
+  ```bash
+  bin/console order-integration:write-queue:purge --succeeded-after=7d --dead-after=30d
+  ```
+  Keep `succeeded` long enough that clients can still poll `GET /v1/jobs/{id}`;
+  keep `dead` longer for triage. Index `idx_owq_purge (status, updated_at)`
+  backs the delete.
+
+  systemd timer (`/etc/systemd/system/order-integration-purge.{service,timer}`):
+  ```ini
+  # order-integration-purge.service
+  [Unit]
+  Description=Order Integration write-queue retention purge
+  [Service]
+  Type=oneshot
+  User=www-data
+  WorkingDirectory=/var/www/shopware
+  ExecStart=/usr/bin/php bin/console order-integration:write-queue:purge --succeeded-after=7d --dead-after=30d
+  ```
+  ```ini
+  # order-integration-purge.timer
+  [Unit]
+  Description=Daily Order Integration write-queue purge
+  [Timer]
+  OnCalendar=daily
+  Persistent=true
+  [Install]
+  WantedBy=timers.target
+  ```
+  ```bash
+  systemctl enable --now order-integration-purge.timer
+  ```
+
+- **Idempotency store** (FilesystemAdapter, not in Postgres): self-expiring with
+  a 24 h TTL — no maintenance.
 
 ## 6. Operational notes
 

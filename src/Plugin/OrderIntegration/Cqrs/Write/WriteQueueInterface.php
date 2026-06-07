@@ -40,4 +40,13 @@ interface WriteQueueInterface
 
     /** Number of commands currently queued (available or waiting on backoff). */
     public function depth(): int;
+
+    /**
+     * Delete terminal rows of the given status whose updated_at is older than
+     * the cutoff (retention cleanup). Only terminal statuses (succeeded, dead)
+     * should ever be passed; queued/in_progress are active work.
+     *
+     * @return int number of rows removed
+     */
+    public function purge(string $status, \DateTimeImmutable $olderThan): int;
 }
