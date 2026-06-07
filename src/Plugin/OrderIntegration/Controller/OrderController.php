@@ -76,8 +76,13 @@ class OrderController extends AbstractController
             ], static fn ($v) => $v !== null);
             $projected = $this->cqrs->listProjected($filters, $limit, $request->query->get('cursor'));
 
+            $items = array_map(static function (array $o): array {
+                unset($o['_etag']); // internal, not part of the Order payload
+                return $o;
+            }, $projected['items']);
+
             return new JsonResponse([
-                'items' => $projected['items'],
+                'items' => $items,
                 'page'  => ['limit' => $limit, 'nextCursor' => $projected['nextCursor']],
             ]);
         }
@@ -230,9 +235,9 @@ class OrderController extends AbstractController
         if ($this->cqrs->projectionReadsEnabled()) {
             $projected = $this->cqrs->getProjectedOrder($orderId);
             if ($projected !== null) {
-                return new JsonResponse($projected, Response::HTTP_OK, [
-                    'ETag' => $this->weakEtagFromSnapshot($projected),
-                ]);
+                $etag = $projected['_etag'] ?? $this->weakEtagFromSnapshot($projected);
+                unset($projected['_etag']); // keep the body identical to the DAL path
+                return new JsonResponse($projected, Response::HTTP_OK, ['ETag' => $etag]);
             }
         }
 

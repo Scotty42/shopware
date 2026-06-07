@@ -21,6 +21,10 @@ final class OrderProjectionWriter
     {
         $snapshot = $this->mapper->mapOrder($order);
         $snapshot['salesChannelId'] = $order->getSalesChannelId();
+        // Store the exact DAL ETag so a projection-served GET returns the SAME
+        // ETag the mutation endpoints validate If-Match against (etagFor uses
+        // microsecond precision that the ATOM updatedAt in the snapshot loses).
+        $snapshot['_etag'] = $this->mapper->etagFor($order);
 
         $this->projection->upsert($snapshot);
     }
