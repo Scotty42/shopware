@@ -14,6 +14,7 @@
             <argument type="service" id="Scotty42\OrderIntegration\Service\IdempotencyService"/>
             <argument type="service" id="Scotty42\OrderIntegration\Http\EtagComparator"/>
             <argument type="service" id="Scotty42\OrderIntegration\Cqrs\CqrsGateway"/>
+            <argument type="service" id="order_integration.lock_factory"/>
             <tag name="controller.service_arguments"/>
             <call method="setContainer">
                 <argument type="service" id="service_container"/>
@@ -26,6 +27,7 @@
             <argument type="service" id="Scotty42\OrderIntegration\Service\OrderMapper"/>
             <argument type="service" id="Scotty42\OrderIntegration\Service\IdempotencyService"/>
             <argument type="service" id="Scotty42\OrderIntegration\Http\EtagComparator"/>
+            <argument type="service" id="order_integration.lock_factory"/>
             <tag name="controller.service_arguments"/>
             <call method="setContainer">
                 <argument type="service" id="service_container"/>
@@ -40,6 +42,7 @@
             <argument type="service" id="Shopware\Core\System\StateMachine\Loader\InitialStateIdLoader"/>
             <argument type="service" id="country.repository"/>
             <argument type="service" id="salutation.repository"/>
+            <argument type="service" id="Scotty42\OrderIntegration\Http\EtagComparator"/>
             <tag name="controller.service_arguments"/>
             <call method="setContainer">
                 <argument type="service" id="service_container"/>
@@ -58,8 +61,6 @@
 
         <service id="Scotty42\OrderIntegration\Service\OrderPatchService">
             <argument type="service" id="order.repository"/>
-            <argument type="service" id="order_address.repository"/>
-            <argument type="service" id="tag.repository"/>
         </service>
 
         <!-- Dedicated, shared, persistent pool for idempotency records. Must NOT
@@ -106,6 +107,19 @@
             <call method="setContainer">
                 <argument type="service" id="service_container"/>
             </call>
+        </service>
+
+        <!-- Write-lock infrastructure for TOCTOU prevention.
+             FlockStore provides per-server file-backed mutexes. For deployments
+             that run multiple PHP-FPM hosts, swap the store to
+             Symfony\Component\Lock\Store\RedisStore (preferred) or
+             Symfony\Component\Lock\Store\DoctrineDbalStore so locks are shared
+             across the cluster. symfony/lock ≥6.2 ships with Shopware 6.6+. -->
+        <service id="Symfony\Component\Lock\Store\FlockStore">
+            <argument>%kernel.cache_dir%/order-integration-locks</argument>
+        </service>
+        <service id="order_integration.lock_factory" class="Symfony\Component\Lock\LockFactory">
+            <argument type="service" id="Symfony\Component\Lock\Store\FlockStore"/>
         </service>
 
         <!-- CQRS: read projection + write queue (Option C, concept docs/cqrs-write-queue-concept.md) -->
@@ -157,6 +171,7 @@
             <argument type="service" id="Scotty42\OrderIntegration\Cqrs\Read\OrderProjectionWriter"/>
             <argument type="service" id="Scotty42\OrderIntegration\Cqrs\PdoConnectionProvider"/>
             <argument type="service" id="logger"/>
+            <argument type="service" id="order_delivery.repository"/>
             <tag name="kernel.event_subscriber"/>
         </service>
 

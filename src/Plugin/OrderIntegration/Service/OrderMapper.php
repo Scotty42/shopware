@@ -75,6 +75,14 @@ class OrderMapper
     /**
      * Weak ETag derived from versionId + updatedAt. Stable per logical revision
      * of the order, sufficient for If-Match optimistic concurrency.
+     *
+     * Note: Shopware's versionId for live orders is always Defaults::LIVE_VERSION
+     * (a fixed UUID), not an incrementing write counter. ETag uniqueness therefore
+     * depends entirely on updatedAt microsecond precision. Two writes that complete
+     * within the same microsecond would produce the same ETag; this is an accepted
+     * limitation of the optimistic-concurrency scheme used here. The write locks
+     * introduced in OrderController and StatusController make same-microsecond
+     * collisions practically impossible under normal load.
      */
     public function etagFor(OrderEntity $order): string
     {

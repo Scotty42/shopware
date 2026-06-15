@@ -26,6 +26,7 @@ use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\Lock\LockFactory;
 use Symfony\Component\Routing\Attribute\Route;
 
 #[Route(defaults: ['_routeScope' => ['api']])]
@@ -45,6 +46,7 @@ class OrderController extends AbstractController
         private readonly IdempotencyService $idempotency,
         private readonly EtagComparator $etagComparator,
         private readonly CqrsGateway $cqrs,
+        private readonly LockFactory $lockFactory,
     ) {}
 
     protected function getIdempotencyService(): IdempotencyService
@@ -55,6 +57,11 @@ class OrderController extends AbstractController
     protected function getEtagComparator(): EtagComparator
     {
         return $this->etagComparator;
+    }
+
+    protected function getIdempotencyLockFactory(): ?LockFactory
+    {
+        return $this->lockFactory;
     }
 
     #[Route(
@@ -258,23 +265,33 @@ class OrderController extends AbstractController
     public function patch(string $orderId, Request $request, Context $context): JsonResponse
     {
         return $this->withIdempotency($request, function () use ($orderId, $request, $context): JsonResponse {
-            $order = $this->findOrder($orderId, $context); // assert exists
-            $this->assertIfMatch($request, $this->orderMapper->etagFor($order));
+            // Hold an order-scoped write lock across the read–check–write sequence to
+            // prevent concurrent requests from both passing the If-Match check on the
+            // same ETag snapshot and silently overwriting each other (lost-update).
+            $lock = $this->lockFactory->createLock('order.write:' . $orderId, 10.0);
+            $lock->acquire(true);
 
-            $data = json_decode($request->getContent(), true) ?? [];
+            try {
+                $order = $this->findOrder($orderId, $context);
+                $this->assertIfMatch($request, $this->orderMapper->etagFor($order));
 
-            $allowed = ['customerComment', 'customFields', 'tags', 'billingAddress', 'shippingAddress'];
-            $data = array_intersect_key($data, array_flip($allowed));
+                $data = json_decode($request->getContent(), true) ?? [];
 
-            if (empty($data)) {
-                throw new ValidationException([
-                    ['pointer' => '/', 'code' => 'no_mutable_fields', 'message' => 'No mutable fields provided.'],
-                ]);
+                $allowed = ['customerComment', 'customFields', 'tags', 'billingAddress', 'shippingAddress'];
+                $data = array_intersect_key($data, array_flip($allowed));
+
+                if (empty($data)) {
+                    throw new ValidationException([
+                        ['pointer' => '/', 'code' => 'no_mutable_fields', 'message' => 'No mutable fields provided.'],
+                    ]);
+                }
+
+                $this->orderPatchService->patch($orderId, $data, $context);
+
+                $order = $this->findOrder($orderId, $context);
+            } finally {
+                $lock->release();
             }
-
-            $this->orderPatchService->patch($orderId, $data, $context);
-
-            $order = $this->findOrder($orderId, $context);
 
             return new JsonResponse(
                 $this->orderMapper->mapOrder($order),
@@ -292,27 +309,34 @@ class OrderController extends AbstractController
     public function delete(string $orderId, Request $request, Context $context): JsonResponse
     {
         return $this->withIdempotency($request, function () use ($orderId, $request, $context): JsonResponse {
-            $order = $this->findOrder($orderId, $context);
-            $this->assertIfMatch($request, $this->orderMapper->etagFor($order));
+            $lock = $this->lockFactory->createLock('order.write:' . $orderId, 10.0);
+            $lock->acquire(true);
 
-            $hard = $request->query->getBoolean('hard', false);
+            try {
+                $order = $this->findOrder($orderId, $context);
+                $this->assertIfMatch($request, $this->orderMapper->etagFor($order));
 
-            if ($hard) {
-                return new JsonResponse([
-                    'type'   => 'about:blank',
-                    'title'  => 'Forbidden',
-                    'status' => 403,
-                    'detail' => 'Hard delete requires scope orders:hard_delete. Not yet implemented.',
-                    'code'   => 'order.hard_delete_not_permitted',
-                ], Response::HTTP_FORBIDDEN, ['Content-Type' => 'application/problem+json']);
-            }
+                $hard = $request->query->getBoolean('hard', false);
 
-            // Soft delete = transition to cancelled. Only an already-cancelled
-            // order is an idempotent no-op; any other illegal transition (e.g.
-            // from `completed`) must surface as 409 rather than a fake 204.
-            $currentStatus = $order->getStateMachineState()?->getTechnicalName();
-            if (!SoftDeletePolicy::isAlreadyCancelled($currentStatus)) {
-                $this->stateMachineService->transitionOrder($orderId, 'cancelled', $context);
+                if ($hard) {
+                    return new JsonResponse([
+                        'type'   => 'about:blank',
+                        'title'  => 'Forbidden',
+                        'status' => 403,
+                        'detail' => 'Hard delete requires scope orders:hard_delete. Not yet implemented.',
+                        'code'   => 'order.hard_delete_not_permitted',
+                    ], Response::HTTP_FORBIDDEN, ['Content-Type' => 'application/problem+json']);
+                }
+
+                // Soft delete = transition to cancelled. Only an already-cancelled
+                // order is an idempotent no-op; any other illegal transition (e.g.
+                // from `completed`) must surface as 409 rather than a fake 204.
+                $currentStatus = $order->getStateMachineState()?->getTechnicalName();
+                if (!SoftDeletePolicy::isAlreadyCancelled($currentStatus)) {
+                    $this->stateMachineService->transitionOrder($orderId, 'cancelled', $context);
+                }
+            } finally {
+                $lock->release();
             }
 
             return new JsonResponse(null, Response::HTTP_NO_CONTENT);
