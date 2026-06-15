@@ -11,6 +11,7 @@ use Scotty42\OrderIntegration\Cqrs\Read\OrderProjectionWriter;
 use Scotty42\OrderIntegration\Service\OrderMapper;
 use Shopware\Core\Checkout\Order\Aggregate\OrderDelivery\OrderDeliveryCollection;
 use Shopware\Core\Checkout\Order\Aggregate\OrderDelivery\OrderDeliveryEntity;
+use Shopware\Core\Checkout\Order\OrderCollection;
 use Shopware\Core\Checkout\Order\OrderEntity;
 use Shopware\Core\Framework\Context;
 use Shopware\Core\Framework\DataAbstractionLayer\EntityRepository;
@@ -98,11 +99,8 @@ class OrderProjectionSubscriberDeliveryTest extends TestCase
             ->willReturn($deliverySearchResult);
 
         // order.repository mock
-        $orderEntities = new class([$order]) extends \ArrayObject {
-            public function getEntities(): array { return $this->getArrayCopy(); }
-        };
         $orderSearchResult = $this->createMock(EntitySearchResult::class);
-        $orderSearchResult->method('getEntities')->willReturn([$order]);
+        $orderSearchResult->method('getEntities')->willReturn(new OrderCollection([$order]));
 
         $orderRepo = $this->createMock(EntityRepository::class);
         $orderRepo->expects(self::once())
