@@ -213,6 +213,30 @@ All errors use `application/problem+json` per RFC 9457. Minimum fields: `type`, 
 - `If-None-Match` / `If-Modified-Since` supported.
 - `If-Match` required on `PUT`/`PATCH`/`DELETE` for optimistic concurrency.
 
+**Implementation status (plugin):**
+
+| Resource | GET returns ETag | Mutating requests require If-Match |
+|---|---|---|
+| `Order` | Yes — `W/"sha1(id\|versionId\|updatedAt)"` | `PATCH`, `DELETE`, all status mutations |
+| `OrderDelivery` | Yes — same algorithm keyed on delivery entity | `PATCH /deliveries/{id}`, `PUT /deliveries/{id}/status` |
+
+Mismatched `If-Match` returns `412 Precondition Failed` (RFC 9110). Missing `If-Match`
+on a mutating call returns `428 Precondition Required`.
+
+Each mutating response also returns a fresh `ETag` of the updated resource, so callers
+can chain operations without a separate `GET`.
+
+**Concurrency hardening:** write mutations are serialised per order via a `FlockStore`-backed
+`symfony/lock` mutex (`order.write:{orderId}`, 10 s TTL). A separate per-key mutex guards
+the idempotency `begin()`/`complete()` window (`idempotency:{key}`, 30 s TTL). Swap to
+`RedisStore` or `DoctrineDbalStore` for multi-server deployments.
+
+**ETag note on Shopware versionId:** Shopware's `versionId` for live orders is always
+`Defaults::LIVE_VERSION` (a fixed UUID), not an incrementing write counter. ETag uniqueness
+therefore depends on `updatedAt` microsecond precision. This is sufficient for the
+optimistic-concurrency guard but means two writes within the same microsecond cannot be
+distinguished — an acceptable trade-off at normal order volumes.
+
 ### 5.6 Rate limiting
 
 Per client (mTLS cert subject or OAuth `client_id`). Headers `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` per RFC 9331. `429 Too Many Requests` with Problem Details on breach.

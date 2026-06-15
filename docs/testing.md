@@ -17,6 +17,25 @@ No Shopware kernel required. These cover the pure-logic seams:
   `OrderCreateValidator` — the cross-cutting request-handling rules.
 - `ExceptionSubscriber` — the RFC 9457 problem+json rendering for every
   handled exception type.
+- **Concurrency hardening (added in `fix/concurrency-guards` + `test/concurrency-coverage`):**
+  - `HandlesIdempotencyLockingTest` — lock acquired before `begin()` and released in
+    `finally` (even on throw); replay works under lock; `null` factory is
+    backwards-compatible; acquire-before-store-check enforced via a spy.
+  - `OrderControllerWriteLockTest` — `order.write:{id}` lock acquired before work,
+    released in `finally`, correct key shape and 10 s TTL verified.
+  - `DeliveryEtagTest` — `W/"sha1(id|versionId|updatedAt)"` shape, stability for
+    equal inputs, sensitivity to id/updatedAt (including microsecond) changes,
+    `EtagComparator` integration.
+  - `OrderPatchServiceAtomicTest` — single `update()` call regardless of fields
+    patched, addresses embedded inline (no separate repo calls), no DB read for
+    scalar-only patches, tags encoded as `[{name:...}]`.
+  - `OrderProjectionSubscriberDeliveryTest` — `onDeliveryWritten()` resolves parent
+    order IDs and upserts them; no-op when DB unconfigured or IDs empty; errors
+    swallowed and forwarded to the logger.
+
+**Coverage reporting:** CI uploads a Clover XML report to Codecov on PHP 8.3 only
+(via `codecov/codecov-action@v4`). Coverage is non-fatal if the `CODECOV_TOKEN`
+secret is absent — the job still passes. See `.github/workflows/ci.yml`.
 
 Run locally:
 
