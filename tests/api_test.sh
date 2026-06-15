@@ -5,8 +5,9 @@
 #
 # Updated for T2 (Idempotency-Key) and T3 (If-Match): order mutations now
 # require a fresh Idempotency-Key AND an If-Match matching the current ETag.
-# POST /orders needs only Idempotency-Key (no resource to match yet); the
-# delivery sub-resource needs neither (not wired in T2/T3 — follow-up).
+# POST /orders needs only Idempotency-Key (no resource to match yet).
+# Delivery mutations (PATCH /deliveries/{id}, PUT /deliveries/{id}/status)
+# also require If-Match — see deliveries section below.
 #
 # This suite validates the SYNCHRONOUS contract, so every mutation pins
 # `Prefer: respond-sync` — it stays green and deterministic even when the server
@@ -58,6 +59,8 @@ create_order() {
 }
 # Current weak ETag of an order (for If-Match on the next mutation).
 etag_of() { curl -s -I "${AUTH[@]}" "$BASE/orders/$1" | grep -i '^etag:' | awk '{print $2}' | tr -d '\r\n'; }
+# Current weak ETag of a delivery (for If-Match on delivery mutations).
+delivery_etag_of() { curl -s -I "${AUTH[@]}" "$BASE/orders/$1/deliveries/$2" | grep -i '^etag:' | awk '{print $2}' | tr -d '\r\n'; }
 status_code() { curl -s -o /dev/null -w "%{http_code}" "$@"; }
 
 echo "=== Read & auth ==="
@@ -167,17 +170,31 @@ NEW_STREET=$(curl -s -X PATCH "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(i
 assert_eq "PATCH shippingAddress persists street" "Neue Strasse 9" "$NEW_STREET"
 
 echo ""
-echo "=== Delivery sub-resource (no Idempotency-Key / If-Match — not wired) ==="
+echo "=== Delivery sub-resource (If-Match required for mutations) ==="
 DORD=$(create_order)
 DID=$(curl -s "${AUTH[@]}" "$BASE/orders/$DORD" | jqpy "d['deliveries'][0]['id']")
 assert_status "GET /deliveries -> 200" "200" "$(status_code "${AUTH[@]}" "$BASE/orders/$DORD/deliveries")"
-NEW_DID=$(curl -s -X POST "${AUTH[@]}" "${JSON[@]}" -d '{}' "$BASE/orders/$DORD/deliveries" | jqpy "d.get('id','')")
+# GET /deliveries/{id} must return an ETag header
+DETAG=$(delivery_etag_of "$DORD" "$DID")
+[[ -n "$DETAG" ]] && ok "GET /deliveries/{id} returns ETag ($DETAG)" || bad "GET /deliveries/{id} missing ETag"
+# POST /deliveries returns ETag for the new delivery
+NEW_RESP=$(curl -s -X POST "${AUTH[@]}" "${JSON[@]}" -D /tmp/post_delivery_headers.txt -d '{}' "$BASE/orders/$DORD/deliveries")
+NEW_DID=$(echo "$NEW_RESP" | jqpy "d.get('id','')")
 [[ -n "$NEW_DID" ]] && ok "POST /deliveries split shipment $NEW_DID" || bad "POST /deliveries"
+NEW_DETAG=$(grep -i '^etag:' /tmp/post_delivery_headers.txt | awk '{print $2}' | tr -d '\r\n')
+[[ -n "$NEW_DETAG" ]] && ok "POST /deliveries returns ETag ($NEW_DETAG)" || bad "POST /deliveries missing ETag"
 assert_status "GET /deliveries/{id} -> 200" "200" "$(status_code "${AUTH[@]}" "$BASE/orders/$DORD/deliveries/$DID")"
-assert_status "PUT /deliveries/{id}/status shipped -> 200" "200" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -d '{"status":"shipped"}' "$BASE/orders/$DORD/deliveries/$DID/status")"
-assert_status "PUT /deliveries/{id}/status no field -> 422" "422" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -d '{}' "$BASE/orders/$DORD/deliveries/$DID/status")"
-DCT=$(curl -s -D - -o /dev/null -X PUT "${AUTH[@]}" "${JSON[@]}" -d '{}' "$BASE/orders/$DORD/deliveries/$DID/status" | grep -i '^content-type:' | tr -d '\r')
+# PUT /deliveries/{id}/status — mutations now require If-Match
+assert_status "PUT /deliveries/{id}/status without If-Match -> 428" "428" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -d '{"status":"shipped"}' "$BASE/orders/$DORD/deliveries/$DID/status")"
+assert_status "PUT /deliveries/{id}/status wrong If-Match -> 412" "412" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -H 'If-Match: W/"stale"' -d '{"status":"shipped"}' "$BASE/orders/$DORD/deliveries/$DID/status")"
+assert_status "PUT /deliveries/{id}/status correct If-Match -> 200" "200" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -H "If-Match: $DETAG" -d '{"status":"shipped"}' "$BASE/orders/$DORD/deliveries/$DID/status")"
+SHIPPED_DETAG=$(delivery_etag_of "$DORD" "$DID")
+assert_status "PUT /deliveries/{id}/status no field -> 422" "422" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -H "If-Match: $SHIPPED_DETAG" -d '{}' "$BASE/orders/$DORD/deliveries/$DID/status")"
+DCT=$(curl -s -D - -o /dev/null -X PUT "${AUTH[@]}" "${JSON[@]}" -H "If-Match: $SHIPPED_DETAG" -d '{}' "$BASE/orders/$DORD/deliveries/$DID/status" | grep -i '^content-type:' | tr -d '\r')
 echo "$DCT" | grep -qi 'application/problem+json' && ok "delivery 422 is application/problem+json (T10)" || bad "delivery 422 content-type (got: $DCT)"
+# PATCH /deliveries/{id} — also requires If-Match
+assert_status "PATCH /deliveries/{id} without If-Match -> 428" "428" "$(status_code -X PATCH "${AUTH[@]}" "${JSON[@]}" -d '{"trackingCodes":["TRACK1"]}' "$BASE/orders/$DORD/deliveries/$DID")"
+assert_status "PATCH /deliveries/{id} correct If-Match -> 200" "200" "$(status_code -X PATCH "${AUTH[@]}" "${JSON[@]}" -H "If-Match: $SHIPPED_DETAG" -d '{"trackingCodes":["TRACK1"]}' "$BASE/orders/$DORD/deliveries/$DID")"
 
 echo ""
 echo "=== DELETE soft cancel (incl. T7 idempotency) ==="
