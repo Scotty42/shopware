@@ -16,6 +16,7 @@ use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\Lock\LockFactory;
 use Symfony\Component\Routing\Attribute\Route;
 
 #[Route(defaults: ['_routeScope' => ['api']])]
@@ -30,6 +31,7 @@ class StatusController extends AbstractController
         private readonly OrderMapper $orderMapper,
         private readonly IdempotencyService $idempotency,
         private readonly EtagComparator $etagComparator,
+        private readonly LockFactory $lockFactory,
     ) {}
 
     protected function getIdempotencyService(): IdempotencyService
@@ -42,6 +44,11 @@ class StatusController extends AbstractController
         return $this->etagComparator;
     }
 
+    protected function getIdempotencyLockFactory(): ?LockFactory
+    {
+        return $this->lockFactory;
+    }
+
     #[Route(
         path: '/api/order-integration/v1/orders/{orderId}/status',
         name: 'api.order-integration.orders.status',
@@ -50,11 +57,16 @@ class StatusController extends AbstractController
     public function setOrderStatus(string $orderId, Request $request, Context $context): JsonResponse
     {
         return $this->withIdempotency($request, function () use ($orderId, $request, $context): JsonResponse {
-            $order = $this->loadOrderOrFail($orderId, $context);
-            $this->assertIfMatch($request, $this->orderMapper->etagFor($order));
-            $targetStatus = $this->getRequiredField($request, 'status');
-
-            $this->stateMachineService->transitionOrder($orderId, $targetStatus, $context);
+            $lock = $this->lockFactory->createLock('order.write:' . $orderId, 10.0);
+            $lock->acquire(true);
+            try {
+                $order = $this->loadOrderOrFail($orderId, $context);
+                $this->assertIfMatch($request, $this->orderMapper->etagFor($order));
+                $targetStatus = $this->getRequiredField($request, 'status');
+                $this->stateMachineService->transitionOrder($orderId, $targetStatus, $context);
+            } finally {
+                $lock->release();
+            }
 
             return $this->respondWithOrder($orderId, $context);
         });
@@ -68,18 +80,23 @@ class StatusController extends AbstractController
     public function setPaymentStatus(string $orderId, Request $request, Context $context): JsonResponse
     {
         return $this->withIdempotency($request, function () use ($orderId, $request, $context): JsonResponse {
-            $order = $this->loadOrderOrFail($orderId, $context);
-            $this->assertIfMatch($request, $this->orderMapper->etagFor($order));
+            $lock = $this->lockFactory->createLock('order.write:' . $orderId, 10.0);
+            $lock->acquire(true);
+            try {
+                $order = $this->loadOrderOrFail($orderId, $context);
+                $this->assertIfMatch($request, $this->orderMapper->etagFor($order));
 
-            $transactions = $order->getTransactions();
-            if ($transactions === null || $transactions->count() === 0) {
-                return $this->conflict('Order has no transactions.', 'order.no_transactions');
+                $transactions = $order->getTransactions();
+                if ($transactions === null || $transactions->count() === 0) {
+                    return $this->conflict('Order has no transactions.', 'order.no_transactions');
+                }
+
+                $transactionId = $transactions->last()->getId();
+                $targetStatus = $this->getRequiredField($request, 'status');
+                $this->stateMachineService->transitionPayment($transactionId, $targetStatus, $context);
+            } finally {
+                $lock->release();
             }
-
-            $transactionId = $transactions->last()->getId();
-            $targetStatus = $this->getRequiredField($request, 'status');
-
-            $this->stateMachineService->transitionPayment($transactionId, $targetStatus, $context);
 
             return $this->respondWithOrder($orderId, $context);
         });
@@ -93,18 +110,23 @@ class StatusController extends AbstractController
     public function setDeliveryStatus(string $orderId, Request $request, Context $context): JsonResponse
     {
         return $this->withIdempotency($request, function () use ($orderId, $request, $context): JsonResponse {
-            $order = $this->loadOrderOrFail($orderId, $context);
-            $this->assertIfMatch($request, $this->orderMapper->etagFor($order));
+            $lock = $this->lockFactory->createLock('order.write:' . $orderId, 10.0);
+            $lock->acquire(true);
+            try {
+                $order = $this->loadOrderOrFail($orderId, $context);
+                $this->assertIfMatch($request, $this->orderMapper->etagFor($order));
 
-            $deliveries = $order->getDeliveries();
-            if ($deliveries === null || $deliveries->count() === 0) {
-                return $this->conflict('Order has no deliveries.', 'order.no_deliveries');
+                $deliveries = $order->getDeliveries();
+                if ($deliveries === null || $deliveries->count() === 0) {
+                    return $this->conflict('Order has no deliveries.', 'order.no_deliveries');
+                }
+
+                $deliveryId = $deliveries->last()->getId();
+                $targetStatus = $this->getRequiredField($request, 'status');
+                $this->stateMachineService->transitionDelivery($deliveryId, $targetStatus, $context);
+            } finally {
+                $lock->release();
             }
-
-            $deliveryId = $deliveries->last()->getId();
-            $targetStatus = $this->getRequiredField($request, 'status');
-
-            $this->stateMachineService->transitionDelivery($deliveryId, $targetStatus, $context);
 
             return $this->respondWithOrder($orderId, $context);
         });

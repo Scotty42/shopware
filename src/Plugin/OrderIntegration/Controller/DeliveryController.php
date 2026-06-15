@@ -4,7 +4,9 @@ namespace Scotty42\OrderIntegration\Controller;
 
 use Scotty42\OrderIntegration\Exception\OrderNotFoundException;
 use Scotty42\OrderIntegration\Exception\ValidationException;
+use Scotty42\OrderIntegration\Http\EtagComparator;
 use Scotty42\OrderIntegration\Service\StateMachineService;
+use Shopware\Core\Checkout\Order\Aggregate\OrderDelivery\OrderDeliveryEntity;
 use Shopware\Core\Checkout\Order\Aggregate\OrderDelivery\OrderDeliveryStates;
 use Shopware\Core\Framework\Context;
 use Shopware\Core\Framework\DataAbstractionLayer\EntityRepository;
@@ -21,6 +23,8 @@ use Symfony\Component\Routing\Attribute\Route;
 #[Route(defaults: ['_routeScope' => ['api']])]
 class DeliveryController extends AbstractController
 {
+    use EnforcesIfMatch;
+
     public function __construct(
         private readonly EntityRepository $orderRepository,
         private readonly EntityRepository $orderDeliveryRepository,
@@ -29,7 +33,22 @@ class DeliveryController extends AbstractController
         private readonly InitialStateIdLoader $initialStateIdLoader,
         private readonly EntityRepository $countryRepository,
         private readonly EntityRepository $salutationRepository,
+        private readonly EtagComparator $etagComparator,
     ) {}
+
+    protected function getEtagComparator(): EtagComparator
+    {
+        return $this->etagComparator;
+    }
+
+    private function deliveryEtagFor(OrderDeliveryEntity $delivery): string
+    {
+        $material = $delivery->getId()
+            . '|' . ($delivery->getVersionId() ?? '')
+            . '|' . ($delivery->getUpdatedAt()?->format('U.u') ?? $delivery->getCreatedAt()?->format('U.u') ?? '');
+
+        return 'W/"' . sha1($material) . '"';
+    }
 
     #[Route(
         path: '/api/order-integration/v1/orders/{orderId}/deliveries',
@@ -87,7 +106,11 @@ class DeliveryController extends AbstractController
 
         $delivery = $this->findDelivery($deliveryId, $orderId, $context);
 
-        return new JsonResponse($this->mapDelivery($delivery), Response::HTTP_CREATED);
+        return new JsonResponse(
+            $this->mapDelivery($delivery),
+            Response::HTTP_CREATED,
+            ['ETag' => $this->deliveryEtagFor($delivery)]
+        );
     }
 
     #[Route(
@@ -128,7 +151,11 @@ class DeliveryController extends AbstractController
         $this->assertOrderExists($orderId, $context);
         $delivery = $this->findDelivery($deliveryId, $orderId, $context);
 
-        return new JsonResponse($this->mapDelivery($delivery));
+        return new JsonResponse(
+            $this->mapDelivery($delivery),
+            Response::HTTP_OK,
+            ['ETag' => $this->deliveryEtagFor($delivery)]
+        );
     }
 
     #[Route(
@@ -139,7 +166,8 @@ class DeliveryController extends AbstractController
     public function patch(string $orderId, string $deliveryId, Request $request, Context $context): JsonResponse
     {
         $this->assertOrderExists($orderId, $context);
-        $this->findDelivery($deliveryId, $orderId, $context);
+        $delivery = $this->findDelivery($deliveryId, $orderId, $context);
+        $this->assertIfMatch($request, $this->deliveryEtagFor($delivery));
 
         $data = json_decode($request->getContent(), true) ?? [];
         $update = ['id' => $deliveryId];
@@ -163,7 +191,11 @@ class DeliveryController extends AbstractController
 
         $delivery = $this->findDelivery($deliveryId, $orderId, $context);
 
-        return new JsonResponse($this->mapDelivery($delivery));
+        return new JsonResponse(
+            $this->mapDelivery($delivery),
+            Response::HTTP_OK,
+            ['ETag' => $this->deliveryEtagFor($delivery)]
+        );
     }
 
     #[Route(
@@ -174,7 +206,8 @@ class DeliveryController extends AbstractController
     public function setStatus(string $orderId, string $deliveryId, Request $request, Context $context): JsonResponse
     {
         $this->assertOrderExists($orderId, $context);
-        $this->findDelivery($deliveryId, $orderId, $context);
+        $delivery = $this->findDelivery($deliveryId, $orderId, $context);
+        $this->assertIfMatch($request, $this->deliveryEtagFor($delivery));
 
         $data = json_decode($request->getContent(), true) ?? [];
 
@@ -194,7 +227,11 @@ class DeliveryController extends AbstractController
 
         $delivery = $this->findDelivery($deliveryId, $orderId, $context);
 
-        return new JsonResponse($this->mapDelivery($delivery));
+        return new JsonResponse(
+            $this->mapDelivery($delivery),
+            Response::HTTP_OK,
+            ['ETag' => $this->deliveryEtagFor($delivery)]
+        );
     }
 
     private function assertOrderExists(string $orderId, Context $context): void

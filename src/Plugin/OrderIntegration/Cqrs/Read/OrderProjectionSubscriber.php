@@ -5,6 +5,7 @@ namespace Scotty42\OrderIntegration\Cqrs\Read;
 use Psr\Log\LoggerInterface;
 use Scotty42\OrderIntegration\Cqrs\PdoConnectionProvider;
 use Scotty42\OrderIntegration\Service\OrderMapper;
+use Shopware\Core\Checkout\Order\Aggregate\OrderDelivery\OrderDeliveryEntity;
 use Shopware\Core\Checkout\Order\OrderEntity;
 use Shopware\Core\Checkout\Order\OrderEvents;
 use Shopware\Core\Framework\DataAbstractionLayer\EntityRepository;
@@ -33,6 +34,7 @@ class OrderProjectionSubscriber implements EventSubscriberInterface
         private readonly OrderProjectionWriter $writer,
         private readonly PdoConnectionProvider $connection,
         private readonly LoggerInterface $logger,
+        private readonly EntityRepository $orderDeliveryRepository,
     ) {}
 
     public static function getSubscribedEvents(): array
@@ -40,6 +42,10 @@ class OrderProjectionSubscriber implements EventSubscriberInterface
         return [
             OrderEvents::ORDER_WRITTEN_EVENT => 'onOrderWritten',
             OrderEvents::ORDER_DELETED_EVENT => 'onOrderDeleted',
+            // Delivery state-machine transitions write to order_delivery, not
+            // order, so ORDER_WRITTEN_EVENT never fires. Without this handler
+            // the projection would stale on delivery status changes.
+            'order_delivery.written' => 'onDeliveryWritten',
         ];
     }
 
@@ -81,6 +87,47 @@ class OrderProjectionSubscriber implements EventSubscriberInterface
             }
         } catch (\Throwable $e) {
             $this->logger->error('Order projection delete failed', ['exception' => $e]);
+        }
+    }
+
+    public function onDeliveryWritten(EntityWrittenEvent $event): void
+    {
+        if (!$this->connection->isConfigured()) {
+            return;
+        }
+
+        $ids = $event->getIds();
+        if ($ids === []) {
+            return;
+        }
+
+        try {
+            $deliveryCriteria = new Criteria($ids);
+            $deliveries = $this->orderDeliveryRepository->search($deliveryCriteria, $event->getContext());
+
+            $orderIds = [];
+            foreach ($deliveries->getEntities() as $delivery) {
+                /** @var OrderDeliveryEntity $delivery */
+                $orderId = $delivery->getOrderId();
+                if ($orderId !== null) {
+                    $orderIds[] = $orderId;
+                }
+            }
+
+            if ($orderIds === []) {
+                return;
+            }
+
+            $criteria = new Criteria(array_unique($orderIds));
+            $criteria->addAssociations(OrderMapper::REQUIRED_ASSOCIATIONS);
+            $orders = $this->orderRepository->search($criteria, $event->getContext());
+
+            foreach ($orders->getEntities() as $order) {
+                /** @var OrderEntity $order */
+                $this->writer->apply($order);
+            }
+        } catch (\Throwable $e) {
+            $this->logger->error('Order projection update failed for delivery change', ['exception' => $e]);
         }
     }
 }
