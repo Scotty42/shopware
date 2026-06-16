@@ -129,8 +129,10 @@ Phase 5 introduces the dedicated mTLS + OAuth 2.0 client-credentials + API-key s
 > (`order.idempotency_key_reused`). `PUT`/`PATCH`/`DELETE` additionally require
 > an **`If-Match`** header carrying the current `ETag` — missing → `428`
 > (`order.precondition_required`), stale → `412` (`order.precondition_failed`).
-> `POST /orders` needs only `Idempotency-Key` (no resource to match yet). The
-> ERP and delivery sub-resources are not yet wired for these headers (follow-up).
+> `POST /orders` needs only `Idempotency-Key` (no resource to match yet).
+> Delivery mutations (`PATCH /deliveries/{did}`, `PUT /deliveries/{did}/status`)
+> also require `If-Match` — the delivery `ETag` is returned by `GET /deliveries/{did}`,
+> `POST /deliveries`, and every mutating response.
 
 ### Orders
 
@@ -155,10 +157,10 @@ Phase 5 introduces the dedicated mTLS + OAuth 2.0 client-credentials + API-key s
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/api/order-integration/v1/orders/{id}/deliveries` | List all deliveries on an order |
-| `POST` | `/api/order-integration/v1/orders/{id}/deliveries` | Create additional delivery (split shipment) |
-| `GET` | `/api/order-integration/v1/orders/{id}/deliveries/{did}` | Get single delivery |
-| `PATCH` | `/api/order-integration/v1/orders/{id}/deliveries/{did}` | Update tracking codes, shipping method |
-| `PUT` | `/api/order-integration/v1/orders/{id}/deliveries/{did}/status` | Delivery state transition |
+| `POST` | `/api/order-integration/v1/orders/{id}/deliveries` | Create additional delivery (split shipment) — returns `ETag` |
+| `GET` | `/api/order-integration/v1/orders/{id}/deliveries/{did}` | Get single delivery — returns `ETag` |
+| `PATCH` | `/api/order-integration/v1/orders/{id}/deliveries/{did}` | Update tracking codes, shipping method — **requires `If-Match`** |
+| `PUT` | `/api/order-integration/v1/orders/{id}/deliveries/{did}/status` | Delivery state transition — **requires `If-Match`** |
 
 ### ERP pull-sync (T12)
 
@@ -344,6 +346,7 @@ rm -rf /var/www/shopware/var/cache/*
 | **2 (done)** | `PUT` status transitions (order, payment, delivery), `POST /v1/orders` via CartService + OrderPersister, OrderMapper, `Location` + `ETag` headers, full spec-compliant `Order` shape |
 | **3 (done)** | `PATCH /v1/orders/{id}`, `DELETE /v1/orders/{id}` (soft cancel), Delivery sub-resource (list, get, create-split, patch tracking, status transition) — line-item allocation (`positions`) and richer PATCH fields remain for a follow-up |
 | **Hardening (done — backlog T1–T11)** | Idempotency-Key enforcement (T2), If-Match/ETag optimistic concurrency (T3), `sort` (T4) + `salesChannelId` (T5) + `customerId` UUID (T6) on list, soft-delete correctness (T7), POST validation (T8), mapper delivery consistency (T9), delivery 422 problem+json (T10), HTTP/CI test coverage (T11), doc alignment (T1). See `docs/BACKLOG.md`. |
+| **Concurrency hardening (done)** | TOCTOU-safe write path: `FlockStore`-backed write lock serialises concurrent PATCH/DELETE/status mutations per order; idempotency per-key lock closes the duplicate-execution window. Delivery mutations (`PATCH /deliveries`, `PUT /deliveries/status`) now enforce `If-Match`. `OrderPatchService` collapsed to a single atomic DAL write. Read projection refreshed on delivery state transitions (`order_delivery.written`). PHPUnit coverage + Codecov integration added to CI. |
 | **ERP pull-sync (done — T12)** | `GET /v1/erp/orders` pull queue + `POST /v1/erp/orders/acknowledge` with the `erpSyncedAt` flag (see `docs/erp-pull-sync-concept.md`). Complements the webhook/`shipment-events` design in §7a, which remains a follow-up. |
 | **4 (done — T13)** | Read projection fed by Shopware `order.written`/`order.deleted` events — decouples read traffic from the shop DB (Postgres JSONB; concept §2 Phase 2). Off by default via `ORDER_INTEGRATION_PROJECTION_READS`. |
 | **4b** | **ERP webhook path** — outbound `order.created` webhook, inbound batched `POST /shipment-events` for FFP-driven shipment status & tracking (see `docs/order-api-concept.md` §7a) |
