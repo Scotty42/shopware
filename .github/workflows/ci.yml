@@ -26,7 +26,10 @@ jobs:
         with:
           php-version: ${{ matrix.php }}
           tools: composer:v2
-          coverage: none
+          # Enable Xdebug coverage only on the primary PHP version to keep the
+          # matrix fast; the other versions run without coverage (still gate on
+          # test results).
+          coverage: ${{ matrix.php == '8.3' && 'xdebug' || 'none' }}
 
       - name: Get Composer cache directory
         id: composer-cache
@@ -45,3 +48,25 @@ jobs:
 
       - name: Run unit tests
         run: vendor/bin/phpunit --testsuite=Unit
+        env:
+          # Disable Xdebug's debugger (keep profiler/coverage) so tests are not
+          # slowed down by step debugging on non-coverage runs.
+          XDEBUG_MODE: ${{ matrix.php == '8.3' && 'coverage' || 'off' }}
+
+      - name: Generate Clover coverage report
+        if: matrix.php == '8.3'
+        run: |
+          vendor/bin/phpunit --testsuite=Unit \
+            --coverage-clover coverage.xml \
+            --coverage-text
+        env:
+          XDEBUG_MODE: coverage
+
+      - name: Upload coverage to Codecov
+        if: matrix.php == '8.3'
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
