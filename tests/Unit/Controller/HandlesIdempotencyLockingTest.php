@@ -4,6 +4,8 @@ namespace Scotty42\OrderIntegration\Tests\Unit\Controller;
 
 use PHPUnit\Framework\TestCase;
 use Scotty42\OrderIntegration\Controller\HandlesIdempotency;
+use Scotty42\OrderIntegration\Idempotency\IdempotencyRecord;
+use Scotty42\OrderIntegration\Idempotency\IdempotencyStoreInterface;
 use Scotty42\OrderIntegration\Idempotency\InMemoryIdempotencyStore;
 use Scotty42\OrderIntegration\Service\IdempotencyService;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -152,15 +154,17 @@ class HandlesIdempotencyLockingTest extends TestCase
         $factory = $this->createMock(LockFactory::class);
         $factory->method('createLock')->willReturn($lock);
 
-        $store = new class extends InMemoryIdempotencyStore {
-            public array $callOrder = [];
+        $store = new class($callOrder) implements IdempotencyStoreInterface {
+            public function __construct(private array &$callOrder) {}
 
-            public function get(string $key): ?\Scotty42\OrderIntegration\Idempotency\IdempotencyRecord
+            public function get(string $key): ?IdempotencyRecord
             {
                 $this->callOrder[] = 'begin';
 
-                return parent::get($key);
+                return null;
             }
+
+            public function put(IdempotencyRecord $record, int $ttlSeconds): void {}
         };
 
         $service = new IdempotencyService($store);
@@ -168,6 +172,6 @@ class HandlesIdempotencyLockingTest extends TestCase
         $req = $this->requestWithKey('key-order-04');
         $subject->run($req, fn () => new JsonResponse([], 200));
 
-        self::assertSame(['acquire', 'begin'], array_merge($callOrder, $store->callOrder));
+        self::assertSame(['acquire', 'begin'], $callOrder);
     }
 }
