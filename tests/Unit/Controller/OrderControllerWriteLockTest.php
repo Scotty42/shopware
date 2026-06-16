@@ -4,7 +4,7 @@ namespace Scotty42\OrderIntegration\Tests\Unit\Controller;
 
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Lock\LockFactory;
-use Symfony\Component\Lock\LockInterface;
+use Symfony\Component\Lock\SharedLockInterface;
 
 /**
  * Verifies that OrderController and StatusController acquire and release the
@@ -39,7 +39,7 @@ class OrderControllerWriteLockTest extends TestCase
     {
         $callOrder = [];
 
-        $lock = $this->createMock(LockInterface::class);
+        $lock = $this->createMock(SharedLockInterface::class);
         $lock->method('acquire')->willReturnCallback(function () use (&$callOrder): bool {
             $callOrder[] = 'acquire';
 
@@ -65,7 +65,7 @@ class OrderControllerWriteLockTest extends TestCase
     {
         $released = false;
 
-        $lock = $this->createMock(LockInterface::class);
+        $lock = $this->createMock(SharedLockInterface::class);
         $lock->method('acquire');
         $lock->method('release')->willReturnCallback(function () use (&$released): void {
             $released = true;
@@ -87,13 +87,13 @@ class OrderControllerWriteLockTest extends TestCase
     {
         $capturedKey = null;
 
-        $lock = $this->createMock(LockInterface::class);
+        $lock = $this->createMock(SharedLockInterface::class);
         $lock->method('acquire');
         $lock->method('release');
 
         $factory = $this->createMock(LockFactory::class);
         $factory->method('createLock')
-            ->willReturnCallback(function (string $key) use (&$capturedKey, $lock): LockInterface {
+            ->willReturnCallback(function (string $key) use (&$capturedKey, $lock): SharedLockInterface {
                 $capturedKey = $key;
 
                 return $lock;
@@ -108,13 +108,13 @@ class OrderControllerWriteLockTest extends TestCase
     {
         $capturedTtl = null;
 
-        $lock = $this->createMock(LockInterface::class);
+        $lock = $this->createMock(SharedLockInterface::class);
         $lock->method('acquire');
         $lock->method('release');
 
         $factory = $this->createMock(LockFactory::class);
         $factory->method('createLock')
-            ->willReturnCallback(function (string $key, float $ttl) use (&$capturedTtl, $lock): LockInterface {
+            ->willReturnCallback(function (string $key, float $ttl) use (&$capturedTtl, $lock): SharedLockInterface {
                 $capturedTtl = $ttl;
 
                 return $lock;

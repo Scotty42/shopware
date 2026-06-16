@@ -9,7 +9,7 @@ use Scotty42\OrderIntegration\Service\IdempotencyService;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\Lock\LockFactory;
-use Symfony\Component\Lock\LockInterface;
+use Symfony\Component\Lock\SharedLockInterface;
 
 /**
  * Verifies the locking behaviour added to HandlesIdempotency::withIdempotency().
@@ -74,7 +74,7 @@ class HandlesIdempotencyLockingTest extends TestCase
 
     public function testWithLockFactoryProducesResponse(): void
     {
-        $lock = $this->createMock(LockInterface::class);
+        $lock = $this->createMock(SharedLockInterface::class);
         $lock->expects(self::once())->method('acquire')->with(true);
         $lock->expects(self::once())->method('release');
 
@@ -94,7 +94,7 @@ class HandlesIdempotencyLockingTest extends TestCase
 
     public function testLockIsReleasedWhenCallableThrows(): void
     {
-        $lock = $this->createMock(LockInterface::class);
+        $lock = $this->createMock(SharedLockInterface::class);
         $lock->expects(self::once())->method('acquire');
         $lock->expects(self::once())->method('release');
 
@@ -110,7 +110,7 @@ class HandlesIdempotencyLockingTest extends TestCase
 
     public function testReplayReturnsCachedResponseUnderLocking(): void
     {
-        $lock = $this->createMock(LockInterface::class);
+        $lock = $this->createMock(SharedLockInterface::class);
         $lock->method('acquire');
         $lock->method('release');
 
@@ -141,7 +141,7 @@ class HandlesIdempotencyLockingTest extends TestCase
         // Verify call order: acquire → begin (checked via side-effect ordering).
         $callOrder = [];
 
-        $lock = $this->createMock(LockInterface::class);
+        $lock = $this->createMock(SharedLockInterface::class);
         $lock->method('acquire')->willReturnCallback(function () use (&$callOrder): bool {
             $callOrder[] = 'acquire';
 
