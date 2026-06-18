@@ -114,17 +114,17 @@ assert_status "PUT /status without If-Match -> 428" "428" "$(status_code -X PUT 
 # wrong If-Match -> 412
 assert_status "PUT /status wrong If-Match -> 412" "412" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" -H 'If-Match: W/"deadbeefdeadbeefdeadbeefdeadbeef"' -d '{"status":"in_progress"}' "$BASE/orders/$CC/status")"
 # correct If-Match -> 200
-assert_status "PUT /status correct If-Match -> 200" "200" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" -H "If-Match: $(etag_of $CC)" -d '{"status":"in_progress"}' "$BASE/orders/$CC/status")"
+assert_status "PUT /status correct If-Match -> 200" "200" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" -H "If-Match: $(etag_of "$CC")" -d '{"status":"in_progress"}' "$BASE/orders/$CC/status")"
 
 echo ""
 echo "=== Status transitions ==="
 TR=$(create_order)
 [[ -n "$TR" ]] && ok "Created transition order $TR" || bad "Create transition order"
-assert_status "PUT /status in_progress -> 200" "200" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" -H "If-Match: $(etag_of $TR)" -d '{"status":"in_progress"}' "$BASE/orders/$TR/status")"
-assert_status "PUT /payment-status paid -> 200" "200" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" -H "If-Match: $(etag_of $TR)" -d '{"status":"paid"}' "$BASE/orders/$TR/payment-status")"
-assert_status "PUT /delivery-status shipped -> 200" "200" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" -H "If-Match: $(etag_of $TR)" -d '{"status":"shipped"}' "$BASE/orders/$TR/delivery-status")"
-assert_status "PUT /status unknown name -> 409" "409" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" -H "If-Match: $(etag_of $TR)" -d '{"status":"invalid"}' "$BASE/orders/$TR/status")"
-assert_status "PUT /status no field -> 422" "422" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" -H "If-Match: $(etag_of $TR)" -d '{}' "$BASE/orders/$TR/status")"
+assert_status "PUT /status in_progress -> 200" "200" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" -H "If-Match: $(etag_of "$TR")" -d '{"status":"in_progress"}' "$BASE/orders/$TR/status")"
+assert_status "PUT /payment-status paid -> 200" "200" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" -H "If-Match: $(etag_of "$TR")" -d '{"status":"paid"}' "$BASE/orders/$TR/payment-status")"
+assert_status "PUT /delivery-status shipped -> 200" "200" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" -H "If-Match: $(etag_of "$TR")" -d '{"status":"shipped"}' "$BASE/orders/$TR/delivery-status")"
+assert_status "PUT /status unknown name -> 409" "409" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" -H "If-Match: $(etag_of "$TR")" -d '{"status":"invalid"}' "$BASE/orders/$TR/status")"
+assert_status "PUT /status no field -> 422" "422" "$(status_code -X PUT "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" -H "If-Match: $(etag_of "$TR")" -d '{}' "$BASE/orders/$TR/status")"
 
 echo ""
 echo "=== Spec-compliant Order shape ==="
@@ -155,18 +155,21 @@ echo ""
 echo "=== POST validation (Idempotency-Key, no If-Match on create) ==="
 NEW_ID=$(create_order)
 [[ -n "$NEW_ID" ]] && ok "POST /orders created $NEW_ID" || bad "POST /orders create"
-assert_status "POST missing salesChannelId -> 422" "422" "$(status_code -X POST "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" -d "{\"lineItems\":[{\"productId\":\"$SHOPWARE_TEST_PRODUCT_ID\",\"quantity\":1}]}" "$BASE/orders")"
-assert_status "POST missing lineItems -> 422" "422" "$(status_code -X POST "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" -d "{\"salesChannelId\":\"$SHOPWARE_SALES_CHANNEL_ID\"}" "$BASE/orders")"
+# Pre-assign bodies to avoid bash 3.2 brace-expansion bug inside "$(cmd "{a,b}")" contexts.
+BODY_NO_SC="{\"lineItems\":[{\"productId\":\"$SHOPWARE_TEST_PRODUCT_ID\",\"quantity\":1}]}"
+BODY_NO_LI="{\"salesChannelId\":\"$SHOPWARE_SALES_CHANNEL_ID\"}"
+assert_status "POST missing salesChannelId -> 422" "422" "$(status_code -X POST "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" -d "$BODY_NO_SC" "$BASE/orders")"
+assert_status "POST missing lineItems -> 422" "422" "$(status_code -X POST "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" -d "$BODY_NO_LI" "$BASE/orders")"
 
 echo ""
 echo "=== PATCH ==="
 PATCH_ID=$(create_order)
-COMMENT=$(curl -s -X PATCH "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" -H "If-Match: $(etag_of $PATCH_ID)" -d '{"customerComment":"Bitte klingeln"}' "$BASE/orders/$PATCH_ID" | jqpy "d.get('customerComment','')")
+COMMENT=$(curl -s -X PATCH "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" -H "If-Match: $(etag_of "$PATCH_ID")" -d '{"customerComment":"Bitte klingeln"}' "$BASE/orders/$PATCH_ID" | jqpy "d.get('customerComment','')")
 assert_eq "PATCH updates customerComment" "Bitte klingeln" "$COMMENT"
-assert_status "PATCH empty body -> 422" "422" "$(status_code -X PATCH "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" -H "If-Match: $(etag_of $PATCH_ID)" -d '{}' "$BASE/orders/$PATCH_ID")"
+assert_status "PATCH empty body -> 422" "422" "$(status_code -X PATCH "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" -H "If-Match: $(etag_of "$PATCH_ID")" -d '{}' "$BASE/orders/$PATCH_ID")"
 assert_status "PATCH unknown id -> 404" "404" "$(status_code -X PATCH "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" -d '{"customerComment":"x"}' "$BASE/orders/b878ba70bf7d47a12ae61ad5b1dc8582")"
 assert_status "PATCH without If-Match -> 428" "428" "$(status_code -X PATCH "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" -d '{"customerComment":"x"}' "$BASE/orders/$PATCH_ID")"
-NEW_STREET=$(curl -s -X PATCH "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" -H "If-Match: $(etag_of $PATCH_ID)" -d '{"shippingAddress":{"street":"Neue Strasse 9"}}' "$BASE/orders/$PATCH_ID" | python3 -c "import sys,json;print((json.load(sys.stdin).get('shippingAddress') or {}).get('street',''))" 2>/dev/null)
+NEW_STREET=$(curl -s -X PATCH "${AUTH[@]}" "${JSON[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" -H "If-Match: $(etag_of "$PATCH_ID")" -d '{"shippingAddress":{"street":"Neue Strasse 9"}}' "$BASE/orders/$PATCH_ID" | python3 -c "import sys,json;print((json.load(sys.stdin).get('shippingAddress') or {}).get('street',''))" 2>/dev/null)
 assert_eq "PATCH shippingAddress persists street" "Neue Strasse 9" "$NEW_STREET"
 
 echo ""
@@ -200,12 +203,12 @@ echo ""
 echo "=== DELETE soft cancel (incl. T7 idempotency) ==="
 DEL=$(create_order)
 assert_status "DELETE without If-Match -> 428" "428" "$(status_code -X DELETE "${AUTH[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" "$BASE/orders/$DEL")"
-assert_status "DELETE -> 204" "204" "$(status_code -X DELETE "${AUTH[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" -H "If-Match: $(etag_of $DEL)" "$BASE/orders/$DEL")"
+assert_status "DELETE -> 204" "204" "$(status_code -X DELETE "${AUTH[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" -H "If-Match: $(etag_of "$DEL")" "$BASE/orders/$DEL")"
 assert_eq "DELETE sets status cancelled" "cancelled" "$(curl -s "${AUTH[@]}" "$BASE/orders/$DEL" | jqpy "d['status']")"
-assert_status "DELETE again (idempotent) -> 204" "204" "$(status_code -X DELETE "${AUTH[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" -H "If-Match: $(etag_of $DEL)" "$BASE/orders/$DEL")"
+assert_status "DELETE again (idempotent) -> 204" "204" "$(status_code -X DELETE "${AUTH[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" -H "If-Match: $(etag_of "$DEL")" "$BASE/orders/$DEL")"
 assert_eq "still cancelled after re-DELETE" "cancelled" "$(curl -s "${AUTH[@]}" "$BASE/orders/$DEL" | jqpy "d['status']")"
 assert_status "DELETE unknown id -> 404" "404" "$(status_code -X DELETE "${AUTH[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" "$BASE/orders/b878ba70bf7d47a12ae61ad5b1dc8582")"
-assert_status "DELETE ?hard=true -> 403" "403" "$(status_code -X DELETE "${AUTH[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" -H "If-Match: $(etag_of $DEL)" "$BASE/orders/$DEL?hard=true")"
+assert_status "DELETE ?hard=true -> 403" "403" "$(status_code -X DELETE "${AUTH[@]}" -H "Idempotency-Key: $(idem)" -H "Prefer: respond-sync" -H "If-Match: $(etag_of "$DEL")" "$BASE/orders/$DEL?hard=true")"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
