@@ -110,13 +110,16 @@
         </service>
 
         <!-- Write-lock infrastructure for TOCTOU prevention.
-             FlockStore provides per-server file-backed mutexes. For deployments
-             that run multiple PHP-FPM hosts, swap the store to
-             Symfony\Component\Lock\Store\RedisStore (preferred) or
+             FlockStore provides per-server file-backed mutexes. Uses var/lock
+             (the Symfony-standard lock directory) so locks survive cache:clear —
+             %kernel.cache_dir% is volatile (hash changes on each warmup) and
+             cannot reliably be created by the web-server user after a cache
+             rebuild. For deployments running multiple PHP-FPM hosts swap the
+             store to Symfony\Component\Lock\Store\RedisStore (preferred) or
              Symfony\Component\Lock\Store\DoctrineDbalStore so locks are shared
              across the cluster. symfony/lock ≥6.2 ships with Shopware 6.6+. -->
         <service id="Symfony\Component\Lock\Store\FlockStore">
-            <argument>%kernel.cache_dir%/order-integration-locks</argument>
+            <argument>%kernel.project_dir%/var/lock</argument>
         </service>
         <service id="order_integration.lock_factory" class="Symfony\Component\Lock\LockFactory">
             <argument type="service" id="Symfony\Component\Lock\Store\FlockStore"/>
