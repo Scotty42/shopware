@@ -25,8 +25,12 @@ TOKEN=$(curl -sf -X POST "$SHOPWARE_URL/api/oauth/token" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 [[ -n "$TOKEN" ]] && ok "Token acquired" || bad "Token acquisition"
 
+CUSTOMER_ID=$(curl -sf -H "Authorization: Bearer $TOKEN" "$SHOPWARE_URL/api/customer?limit=1" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['data'][0]['id'])")
+[[ -n "$CUSTOMER_ID" ]] && ok "Customer ID fetched ($CUSTOMER_ID)" || { bad "Customer ID fetch failed"; exit 1; }
+
 BODY=$(cat <<JSON
-{"salesChannelId":"$SHOPWARE_SALES_CHANNEL_ID","lineItems":[{"productId":"$SHOPWARE_TEST_PRODUCT_ID","quantity":1}]}
+{"salesChannelId":"$SHOPWARE_SALES_CHANNEL_ID","customer":{"id":"$CUSTOMER_ID"},"lineItems":[{"productId":"$SHOPWARE_TEST_PRODUCT_ID","quantity":1}]}
 JSON
 )
 

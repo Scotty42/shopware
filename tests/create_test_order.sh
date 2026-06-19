@@ -16,7 +16,7 @@ REGISTER_RESPONSE=$(curl -sf -D - -X POST "$SHOPWARE_URL/store-api/account/regis
   -H "sw-context-token: $CONTEXT_TOKEN" \
   -H "Content-Type: application/json" \
   -d "{
-    \"email\": \"testorder@example.com\",
+    \"email\": \"testorder+$(date +%s)@example.com\",
     \"password\": \"Test1234!\",
     \"guest\": true,
     \"firstName\": \"Test\",
@@ -27,7 +27,7 @@ REGISTER_RESPONSE=$(curl -sf -D - -X POST "$SHOPWARE_URL/store-api/account/regis
       \"city\": \"Berlin\",
       \"countryId\": \"019e77c7b1d771e594804b0ab7ed9071\"
     },
-    \"storefrontUrl\": \"http://shopware-fe.lan.internal:3000\"
+    \"storefrontUrl\": \"http://127.0.0.1:8000\"
   }")
 
 CONTEXT_TOKEN=$(echo "$REGISTER_RESPONSE" | grep -i "sw-context-token:" | awk '{print $2}' | tr -d '\r')
