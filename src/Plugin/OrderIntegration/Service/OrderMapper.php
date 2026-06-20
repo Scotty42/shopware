@@ -35,6 +35,7 @@ class OrderMapper
         'transactions.stateMachineState',
         'deliveries.stateMachineState',
         'deliveries.shippingOrderAddress.country',
+        'deliveries.shippingMethod',
         'addresses.country',
         'orderCustomer',
         'tags',
@@ -253,10 +254,13 @@ class OrderMapper
 
         $out = [];
         foreach ($deliveries as $delivery) {
+            $methodName = $delivery->getShippingMethod()?->getName();
             $out[] = [
                 'id'             => $delivery->getId(),
                 'orderId'        => $order->getId(),
                 'status'         => $delivery->getStateMachineState()?->getTechnicalName(),
+                'shippingMethod' => $methodName,
+                'carrier'        => self::extractCarrier($methodName),
                 'trackingCodes'  => array_map(
                     static fn(string $code): array => ['code' => $code],
                     $delivery->getTrackingCodes() ?? []
@@ -271,6 +275,32 @@ class OrderMapper
         }
 
         return $out;
+    }
+
+    /**
+     * Extracts a top-level carrier token from a Shopware shipping method name.
+     *
+     * Shopware stores the full method name (e.g. "DHL Standard", "UPS Express").
+     * The SCA schema wants a short carrier identifier at the delivery level that
+     * is independent of the service tier. We match the first word against a fixed
+     * whitelist; unknown prefixes fall back to the full method name so nothing is
+     * silently dropped.
+     */
+    private static function extractCarrier(?string $shippingMethodName): ?string
+    {
+        if ($shippingMethodName === null || $shippingMethodName === '') {
+            return null;
+        }
+
+        $known = ['DHL', 'UPS', 'DPD', 'FedEx', 'Hermes', 'GLS', 'TNT', 'PostNL'];
+        $first = (string) strtok($shippingMethodName, ' ');
+        foreach ($known as $k) {
+            if (strcasecmp($first, $k) === 0) {
+                return $k;
+            }
+        }
+
+        return $shippingMethodName;
     }
 
     /**
