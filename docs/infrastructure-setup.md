@@ -127,6 +127,8 @@ ORDER_INTEGRATION_PROJECTION_READS=true
 ORDER_INTEGRATION_DB_DSN=pgsql:host=order-integration-db.lan.internal;port=5432;dbname=order_integration
 ORDER_INTEGRATION_DB_USER=order_integration
 ORDER_INTEGRATION_DB_PASSWORD=change-me
+CF_ACCESS_CLIENT_ID=
+CF_ACCESS_CLIENT_SECRET=
 ```
 
 Then run the async integration test from the BE container:
@@ -138,12 +140,18 @@ SHOPWARE_CONSOLE="php /var/www/shopware/bin/console" bash tests/write_queue_test
 The feature flags default to **off** in `.env.test.dist`, so the rest of the
 suite runs unchanged unless you opt in.
 
+`CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` are optional and only needed
+when the configured `SHOPWARE_URL` is behind Cloudflare Access.
+
 ### Production
 
 Set the same variables in the Shopware environment on the BE container (`.env` /
 secret manager). The PDO connection is opened lazily, so with the flags off and
 no DSN the plugin keeps its synchronous, DAL-backed behaviour and nothing
 breaks.
+
+Cloudflare credentials are not generally required in production. Use them only
+if your production ingress is also protected by Cloudflare Access / WAF.
 
 Recommended rollout (matches `order-api-concept.md` §2):
 

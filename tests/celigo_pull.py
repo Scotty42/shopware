@@ -45,10 +45,14 @@ def load_env(path):
     return env
 
 
-def http_get(url, token, timeout=20):
+def http_get(url, token, extra_headers=None, user_agent=None, timeout=20):
     req = request.Request(url)
     req.add_header('Accept', 'application/json')
+    if user_agent:
+        req.add_header('User-Agent', user_agent)
     req.add_header('Authorization', 'Bearer ' + token)
+    for k, v in (extra_headers or {}).items():
+        req.add_header(k, v)
     try:
         with request.urlopen(req, timeout=timeout) as r:
             return r.status, json.loads(r.read())
@@ -58,7 +62,7 @@ def http_get(url, token, timeout=20):
         sys.exit(f'HTTP error: {ex}')
 
 
-def acquire_token(env):
+def acquire_token(env, extra_headers=None, user_agent=None):
     body = json.dumps({
         'grant_type': 'password',
         'client_id': 'administration',
@@ -68,6 +72,11 @@ def acquire_token(env):
     }).encode()
     req = request.Request(env['SHOPWARE_URL'].rstrip('/') + '/api/oauth/token', data=body)
     req.add_header('Content-Type', 'application/json')
+    req.add_header('Accept', 'application/json')
+    if user_agent:
+        req.add_header('User-Agent', user_agent)
+    for k, v in (extra_headers or {}).items():
+        req.add_header(k, v)
     try:
         with request.urlopen(req, timeout=20) as r:
             return json.loads(r.read())['access_token']
@@ -271,19 +280,36 @@ def main():
     env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             '..', '.env.test')
     env = load_env(env_path)
-    missing = [k for k in ('SHOPWARE_URL', 'SHOPWARE_ADMIN_USER', 'SHOPWARE_ADMIN_PASSWORD')
+    missing = [k for k in (
+        'SHOPWARE_URL',
+        'SHOPWARE_ADMIN_USER',
+        'SHOPWARE_ADMIN_PASSWORD',
+        'CF_ACCESS_CLIENT_ID',
+        'CF_ACCESS_CLIENT_SECRET',
+    )
                if not env.get(k)]
     if missing:
         sys.exit('Missing in .env.test: ' + ', '.join(missing))
 
+    cf_headers = {
+        'CF-Access-Client-Id': env['CF_ACCESS_CLIENT_ID'],
+        'CF-Access-Client-Secret': env['CF_ACCESS_CLIENT_SECRET'],
+    }
+    user_agent = env.get(
+        'CELIGO_PULL_USER_AGENT',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+        'AppleWebKit/537.36 (KHTML, like Gecko) '
+        'Chrome/126.0.0.0 Safari/537.36',
+    )
+
     base = env['SHOPWARE_URL'].rstrip('/') + '/api/order-integration/v1'
 
-    print(f'Authenticating against {env["SHOPWARE_URL"]} …')
-    token = acquire_token(env)
+    print(f'Authenticating against {env["SHOPWARE_URL"]} via Cloudflare Access service token …')
+    token = acquire_token(env, cf_headers, user_agent=user_agent)
 
     url = f'{base}/erp/orders?limit={args.limit}'
     print(f'Pulling unacknowledged orders: GET {url}')
-    status, body = http_get(url, token)
+    status, body = http_get(url, token, cf_headers, user_agent=user_agent)
     if status != 200:
         sys.exit(f'GET /erp/orders returned HTTP {status}')
 

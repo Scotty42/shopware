@@ -50,7 +50,9 @@ graph TB
     Worker -->|"claim (SKIP LOCKED)"| PG
     Worker --> SW
 ```
-The plugin lives inside the Shopware container. Test scripts call `http://localhost/...` because they run on the same host. External callers use `http://shopware-be.lan.internal/...`.
+The plugin lives inside the Shopware container. Test scripts read `SHOPWARE_URL`
+from `.env.test`, so the target can be local (`http://localhost`) or a
+public/staging URL (for example behind Cloudflare Access).
 
 ### Plugin location
 /var/www/shopware_development/     ← git repo (this repo)
@@ -289,7 +291,9 @@ cp .env.test.dist .env.test
 
 | Variable | Description |
 |---|---|
-| `SHOPWARE_URL` | Base URL of the Shopware backend (e.g. `http://localhost` on BE container, `http://shopware-be.lan.internal` from other hosts) |
+| `SHOPWARE_URL` | Base URL of the Shopware backend (local, internal, or public test/staging URL) |
+| `CF_ACCESS_CLIENT_ID` | Optional Cloudflare Access service token client ID. Required only when `SHOPWARE_URL` is protected by Cloudflare Access. |
+| `CF_ACCESS_CLIENT_SECRET` | Optional Cloudflare Access service token secret. Required only when `SHOPWARE_URL` is protected by Cloudflare Access. |
 | `SHOPWARE_ADMIN_USER` | Shopware admin username (for password grant token) |
 | `SHOPWARE_ADMIN_PASSWORD` | Shopware admin password |
 | `SHOPWARE_STORE_ACCESS_KEY` | Store API access key of the Headless Sales Channel (starts with `SWSC...`) |
@@ -297,6 +301,10 @@ cp .env.test.dist .env.test
 | `SHOPWARE_INTEGRATION_SECRET` | Secret of the Integration user — set at creation time, stored hashed in Shopware |
 | `SHOPWARE_SALES_CHANNEL_ID` | Hex ID of the Headless Sales Channel used for test order creation |
 | `SHOPWARE_TEST_PRODUCT_ID` | Hex ID of an active product used in test orders |
+
+Cloudflare note: the CF variables are typically needed in test/staging where
+public endpoints are Access-protected. For production, they are only relevant
+if the production ingress is also behind Cloudflare Access / WAF.
 
 ### Run tests
 

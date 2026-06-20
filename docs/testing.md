@@ -64,6 +64,10 @@ tests/create_test_order.sh
 tests/api_test.sh
 ```
 
+If `.env.test` points to a Cloudflare Access protected URL, also set
+`CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET`. In normal local/internal
+setups these stay empty.
+
 ## Coverage gap (tracked)
 
 The HTTP layer is currently covered only by the bash suite, which does not run
