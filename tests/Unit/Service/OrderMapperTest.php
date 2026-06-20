@@ -8,6 +8,7 @@ use Shopware\Core\Checkout\Order\Aggregate\OrderAddress\OrderAddressEntity;
 use Shopware\Core\Checkout\Order\Aggregate\OrderDelivery\OrderDeliveryCollection;
 use Shopware\Core\Checkout\Order\Aggregate\OrderDelivery\OrderDeliveryEntity;
 use Shopware\Core\Checkout\Order\OrderEntity;
+use Shopware\Core\Checkout\Shipping\ShippingMethodEntity;
 use Shopware\Core\System\Currency\CurrencyEntity;
 use Shopware\Core\System\StateMachine\Aggregation\StateMachineState\StateMachineStateEntity;
 
@@ -44,6 +45,7 @@ final class OrderMapperTest extends TestCase
         $this->assertContains('transactions.stateMachineState', $assoc);
         $this->assertContains('deliveries.stateMachineState', $assoc);
         $this->assertContains('deliveries.shippingOrderAddress.country', $assoc);
+        $this->assertContains('deliveries.shippingMethod', $assoc);
     }
 
     public function testRequiredAssociationsHasNoDuplicates(): void
@@ -236,10 +238,45 @@ final class OrderMapperTest extends TestCase
         $this->assertSame('11111', $payload['shippingAddress']['zipcode']);
     }
 
+    /** @return array<array{string|null, string|null}> */
+    public static function carrierExtractionCases(): array
+    {
+        return [
+            'known prefix DHL'               => ['DHL Standard',   'DHL'],
+            'known prefix UPS mixed case'    => ['ups Express',     'UPS'],
+            'known prefix DPD'               => ['DPD Classic',     'DPD'],
+            'known prefix FedEx'             => ['FedEx Overnight', 'FedEx'],
+            'unknown prefix falls back full' => ['Standard Shipping', 'Standard Shipping'],
+            'null method gives null carrier' => [null,              null],
+        ];
+    }
+
+    /** @dataProvider carrierExtractionCases */
+    public function testCarrierIsExtractedFromShippingMethodName(
+        ?string $methodName,
+        ?string $expectedCarrier,
+    ): void {
+        $order = $this->makeOrder(
+            id: str_repeat('a', 32),
+            versionId: str_repeat('b', 32),
+            updatedAt: new \DateTimeImmutable('2025-06-01T12:00:00+00:00'),
+        );
+
+        $delivery = $this->makeDelivery(str_repeat('d', 32), 'open', '12345', $methodName);
+        $order->setDeliveries(new OrderDeliveryCollection([$delivery]));
+
+        $payload = $this->mapper->mapOrder($order);
+
+        $d = $payload['deliveries'][0];
+        $this->assertSame($methodName, $d['shippingMethod']);
+        $this->assertSame($expectedCarrier, $d['carrier']);
+    }
+
     private function makeDelivery(
         string $id,
         string $stateTechnicalName,
         string $zipcode,
+        ?string $shippingMethodName = null,
     ): OrderDeliveryEntity {
         $state = new StateMachineStateEntity();
         $state->setId('state-' . substr($id, 0, 4));
@@ -271,6 +308,13 @@ final class OrderMapperTest extends TestCase
         $delivery->setShippingDateLatest(new \DateTimeImmutable('2025-06-08T10:00:00+00:00'));
         $delivery->setCreatedAt(new \DateTimeImmutable('2025-06-01T10:00:00+00:00'));
         $delivery->setUpdatedAt(new \DateTimeImmutable('2025-06-01T10:00:00+00:00'));
+
+        if ($shippingMethodName !== null) {
+            $method = new ShippingMethodEntity();
+            $method->setId(str_repeat('e', 32));
+            $method->setName($shippingMethodName);
+            $delivery->setShippingMethod($method);
+        }
 
         return $delivery;
     }
