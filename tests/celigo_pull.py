@@ -280,21 +280,20 @@ def main():
     env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             '..', '.env.test')
     env = load_env(env_path)
-    missing = [k for k in (
-        'SHOPWARE_URL',
-        'SHOPWARE_ADMIN_USER',
-        'SHOPWARE_ADMIN_PASSWORD',
-        'CF_ACCESS_CLIENT_ID',
-        'CF_ACCESS_CLIENT_SECRET',
-    )
+    missing = [k for k in ('SHOPWARE_URL', 'SHOPWARE_ADMIN_USER', 'SHOPWARE_ADMIN_PASSWORD')
                if not env.get(k)]
     if missing:
         sys.exit('Missing in .env.test: ' + ', '.join(missing))
 
-    cf_headers = {
-        'CF-Access-Client-Id': env['CF_ACCESS_CLIENT_ID'],
-        'CF-Access-Client-Secret': env['CF_ACCESS_CLIENT_SECRET'],
-    }
+    # Cloudflare Access service-token headers — only sent when both vars are set.
+    # Required when SHOPWARE_URL is a public endpoint protected by CF Access WAF;
+    # omitted automatically for local / internal URLs where CF is not in the path.
+    cf_id     = env.get('CF_ACCESS_CLIENT_ID')
+    cf_secret = env.get('CF_ACCESS_CLIENT_SECRET')
+    cf_headers = (
+        {'CF-Access-Client-Id': cf_id, 'CF-Access-Client-Secret': cf_secret}
+        if cf_id and cf_secret else {}
+    )
     user_agent = env.get(
         'CELIGO_PULL_USER_AGENT',
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
@@ -304,7 +303,8 @@ def main():
 
     base = env['SHOPWARE_URL'].rstrip('/') + '/api/order-integration/v1'
 
-    print(f'Authenticating against {env["SHOPWARE_URL"]} via Cloudflare Access service token …')
+    via = 'via Cloudflare Access service token' if cf_headers else 'directly'
+    print(f'Authenticating against {env["SHOPWARE_URL"]} {via} …')
     token = acquire_token(env, cf_headers, user_agent=user_agent)
 
     url = f'{base}/erp/orders?limit={args.limit}'
