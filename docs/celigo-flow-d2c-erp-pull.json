@@ -1,0 +1,255 @@
+{
+  "_type": "template",
+  "name": "D2C ERP Order Pull — Shopware Order Integration",
+  "version": "1.0",
+  "description": "Pulls unacknowledged D2C orders from GET /erp/orders (oldest-first, limit=1 per page), maps them to the SCA push payload shape, and acknowledges them via POST /erp/orders/acknowledge after successful ERP posting. Handles Shopware OAuth 2.0 (password grant via JSON body) and optional Cloudflare Access WAF headers.",
+
+  "_readme": [
+    "IMPORT INSTRUCTIONS",
+    "1. Replace every {{PLACEHOLDER}} value in the 'settings' block below.",
+    "2. Import this file via Celigo → Resources → Templates → Import.",
+    "3. The connection will appear under Connections; verify the token test succeeds.",
+    "4. Activate the flow; it polls GET /erp/orders?limit=1 on each run.",
+    "5. Wire the 'pageProcessors' section to your ERP/NAV import adaptor.",
+    "6. The acknowledge step fires automatically after the import reports success."
+  ],
+
+  "settings": {
+    "shopwareUrl":     "{{SHOPWARE_URL}}",
+    "adminUser":       "{{SHOPWARE_ADMIN_USER}}",
+    "adminPassword":   "{{SHOPWARE_ADMIN_PASSWORD}}",
+    "cfClientId":      "{{CF_ACCESS_CLIENT_ID}}",
+    "cfClientSecret":  "{{CF_ACCESS_CLIENT_SECRET}}",
+    "salesChannelId":  "{{SHOPWARE_SALES_CHANNEL_ID}}"
+  },
+
+  "connection": {
+    "_id": "conn_shopware_oi",
+    "name": "Shopware Order Integration API",
+    "type": "http",
+    "http": {
+      "formType": "http",
+      "baseURI": "{{settings.shopwareUrl}}",
+      "mediaType": "json",
+
+      "_comment_auth": [
+        "Shopware uses OAuth 2.0 password grant with a JSON body (not form-encoded).",
+        "Celigo's 'custom token' auth type handles this: Celigo POSTs the tokenConfig",
+        "body to tokenURI and extracts the token from the JSON response."
+      ],
+      "auth": {
+        "type": "token",
+        "token": {
+          "location":   "header",
+          "headerName": "Authorization",
+          "scheme":     "Bearer",
+          "token":      ""
+        },
+        "tokenConfig": {
+          "uri":    "/api/oauth/token",
+          "method": "POST",
+          "mediaType": "json",
+          "body": {
+            "grant_type": "password",
+            "client_id":  "administration",
+            "username":   "{{settings.adminUser}}",
+            "password":   "{{settings.adminPassword}}",
+            "scopes":     "write"
+          },
+          "tokenPath":   "access_token",
+          "expiresPath": "expires_in"
+        }
+      },
+
+      "_comment_cf": [
+        "Cloudflare Access service-token headers.",
+        "Required when shopwareUrl is a public staging endpoint behind CF WAF.",
+        "Remove both headers if connecting to an internal / VPN-only URL."
+      ],
+      "headers": [
+        {
+          "name":  "CF-Access-Client-Id",
+          "value": "{{settings.cfClientId}}"
+        },
+        {
+          "name":  "CF-Access-Client-Secret",
+          "value": "{{settings.cfClientSecret}}"
+        }
+      ],
+
+      "errorPath":   "errors",
+      "successPath": "",
+      "requestTimeout": 30000
+    }
+  },
+
+  "exports": [
+    {
+      "_id": "exp_erp_orders_pull",
+      "name": "Pull unacknowledged D2C orders (limit=1)",
+      "_connectionId": "conn_shopware_oi",
+      "adaptorType": "HTTPExport",
+
+      "_comment": [
+        "GET /erp/orders returns orders where customFields.erpSyncedAt is absent,",
+        "ordered oldest-first. Using limit=1 processes one order per Celigo run —",
+        "safe for testing and for pipelines that need per-order acknowledgement.",
+        "Increase limit (max 200) for batch processing once the flow is validated."
+      ],
+
+      "http": {
+        "relativeURI": "/api/order-integration/v1/erp/orders",
+        "method": "GET",
+        "parameters": [
+          { "name": "limit", "value": "1" }
+        ],
+
+        "_comment_pagination": [
+          "Cursor-based pagination. The API returns page.nextCursor when more",
+          "unacknowledged orders exist. Celigo follows the cursor automatically.",
+          "With limit=1 this produces exactly one record per flow run."
+        ],
+        "paginate": {
+          "method":          "url",
+          "hasNextPagePath": "page.nextCursor",
+          "relativeURITemplate": "/api/order-integration/v1/erp/orders?limit=1&cursor={{{data.page.nextCursor}}}"
+        },
+
+        "resourcePath":       "items",
+        "successStatusCode":  200,
+        "errorStatusCode":    [400, 401, 403, 422, 429, 500]
+      },
+
+      "_comment_output": [
+        "Each record yielded to page processors is one Order object.",
+        "Key fields available for ERP mapping — see field-mapping section below."
+      ],
+
+      "adaptorType": "HTTPExport",
+      "transform": {
+        "_comment": "Optional pre-processor: extract the order id for use in the acknowledge step.",
+        "type": "expression",
+        "expression": {
+          "version": 1,
+          "rules": [
+            ["=", "$.id",            "{{data.id}}"],
+            ["=", "$.orderNumber",   "{{data.orderNumber}}"],
+            ["=", "$.createdAt",     "{{data.createdAt}}"],
+            ["=", "$.currency",      "{{data.currency}}"],
+            ["=", "$.totalGross",    "{{data.total.amount}}"],
+            ["=", "$.totalNet",      "{{math 'subtract' data.total.amount data.tax.amount}}"],
+            ["=", "$.billingEmail",  "{{data.customer.email}}"],
+            ["=", "$.shipperCarrier","{{data.deliveries.[0].carrier}}"],
+            ["=", "$.shipperMethod", "{{data.deliveries.[0].shippingMethod}}"]
+          ]
+        }
+      }
+    }
+  ],
+
+  "pageProcessors": [
+    {
+      "_comment": "Step 1 — ERP/NAV import. Replace with your actual NAV / ERP import adaptor.",
+      "type": "import",
+      "_importId": "imp_nav_sales_order",
+      "responseMapping": {
+        "fields": [
+          { "extract": "id",       "generate": "navOrderId" },
+          { "extract": "invoiceNo","generate": "invoiceNo"  }
+        ]
+      },
+      "hooks": {
+        "preSavePage": {
+          "_comment": [
+            "ERP-origin fields not available from the shop — must be set here",
+            "BEFORE pushing to SCA. These come back from NAV after posting:",
+            "  invoiceDate  — NAV sets this when the invoice is created",
+            "  invoiceNo    — NAV-assigned human-readable invoice number",
+            "  customerNo   — ASAM customer master number (NAV lookup by email)",
+            "  incoterm     — if required, set from NAV customer/order defaults",
+            "  lineNetAmt   — net amount per line (NAV calculates from tax rates)",
+            "  lineVat      — VAT amount per line (NAV calculates)"
+          ]
+        }
+      }
+    },
+    {
+      "_comment": "Step 2 — SCA push. Fires after NAV confirms the order is posted.",
+      "type": "import",
+      "_importId": "imp_sca_push",
+      "_comment_mapping": [
+        "Field mapping: Order Integration API → SCA payload (OrderExport-ERP-SCA.yaml)",
+        "",
+        "SCA field            Source                         Notes",
+        "────────────────── ──────────────────────────────── ──────────────────────────",
+        "orderNo              data.orderNumber                direct",
+        "orderDate            data.createdAt                  direct (ISO 8601)",
+        "invoiceDate          navOrderId.invoiceDate          ERP origin — from NAV post",
+        "invoiceNo            navOrderId.invoiceNo            ERP origin — from NAV post",
+        "currencyCode         data.currency                   direct (ISO 4217)",
+        "amountIncludingVAT   data.total.amount               direct",
+        "amountWithoutVAT     data.total.amount - data.tax.amount  computed",
+        "incoterm             (NAV customer default)          ERP origin",
+        "shipper              data.deliveries[0].carrier      mapped by extractCarrier()",
+        "",
+        "billingAddress.*     data.billingAddress.*           direct (field name map below)",
+        "  customerNo         (NAV customer master)           ERP origin — NAV lookup",
+        "  firstName/lastName/address/city/postCode/countryCode/phone  direct",
+        "  email              data.customer.email             order-level field",
+        "",
+        "lineItems[].lineNo   (1-based index)                 generated by Celigo",
+        "lineItems[].type     data.lineItems[i].type          map to ASAM product type",
+        "lineItems[].itemNo   data.lineItems[i].sku           or payload.productNumber",
+        "lineItems[].desc     data.lineItems[i].label         direct",
+        "lineItems[].qty      data.lineItems[i].quantity      direct",
+        "lineItems[].gross    data.lineItems[i].totalPrice.amount  direct",
+        "lineItems[].net      (NAV calculates)                ERP origin",
+        "lineItems[].vat      (NAV calculates)                ERP origin"
+      ]
+    },
+    {
+      "_comment": "Step 3 — Acknowledge. Marks the order as ERP-synced; removes it from the pull queue.",
+      "type": "import",
+      "_id": "pp_acknowledge",
+      "name": "Acknowledge order as ERP-synced",
+      "_connectionId": "conn_shopware_oi",
+      "adaptorType": "HTTPImport",
+      "http": {
+        "relativeURI": "/api/order-integration/v1/erp/orders/acknowledge",
+        "method":      "POST",
+        "mediaType":   "json",
+        "body": {
+          "orderIds": ["{{data.id}}"]
+        },
+        "successStatusCode":  200,
+        "errorStatusCode":    [400, 401, 403, 422, 500]
+      },
+      "_comment_idempotency": [
+        "POST /erp/orders/acknowledge is idempotent: already-synced order IDs",
+        "are returned in the 'alreadySynced' array without an error.",
+        "Safe to retry if the Celigo step fails before recording the result."
+      ]
+    }
+  ],
+
+  "flows": [
+    {
+      "_id": "flow_d2c_erp_pull",
+      "name": "D2C → ERP Order Pull (limit=1)",
+      "description": "Polls the D2C Shopware ERP pull queue, processes one order per run through NAV posting and SCA push, then acknowledges it.",
+      "_exportId": "exp_erp_orders_pull",
+      "pageProcessors": [
+        { "_importId": "imp_nav_sales_order" },
+        { "_importId": "imp_sca_push" },
+        { "_importId": "pp_acknowledge" }
+      ],
+      "free": false,
+      "autoResolveMatchingTraceKeys": true,
+      "_comment_scheduling": [
+        "Recommended schedule: every 5 minutes for near-real-time order processing.",
+        "Increase limit on the export to 50–200 once the flow is validated to",
+        "batch-process backlog faster. The acknowledge step batches up to 500 IDs."
+      ]
+    }
+  ]
+}
