@@ -117,8 +117,12 @@ def http_post(url, token, body, extra_headers=None, timeout=20):
     try:
         with request.urlopen(req, timeout=timeout) as r:
             raw = r.read()
-            return r.status, json.loads(raw) if raw else {}
-    except error.HTTPError as e:
+            try:
+                body = json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                snippet = raw[:500].decode('utf-8', errors='replace')
+                sys.exit(f'Non-JSON response from {url} (HTTP {r.status}): {snippet}')
+            return r.status, body
         try:
             return e.code, json.loads(e.read())
         except Exception:
