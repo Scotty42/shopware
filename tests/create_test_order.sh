@@ -9,6 +9,9 @@ if [[ -n "${CF_ACCESS_CLIENT_ID:-}" && -n "${CF_ACCESS_CLIENT_SECRET:-}" ]]; the
   CF_ARGS=(-H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET")
 fi
 
+: "${SHOPWARE_TEST_PRODUCT_ID:?Missing SHOPWARE_TEST_PRODUCT_ID in .env.test}"
+: "${SHOPWARE_STORE_ACCESS_KEY:?Missing SHOPWARE_STORE_ACCESS_KEY in .env.test}"
+
 # 1. Gast-Kontext anlegen
 CONTEXT_TOKEN=$(curl -sf -X GET "$SHOPWARE_URL/store-api/context" \
   -H "sw-access-key: $SHOPWARE_STORE_ACCESS_KEY" \
