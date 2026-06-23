@@ -73,7 +73,12 @@ def http_get(url, token, extra_headers=None, timeout=20):
         with request.urlopen(req, timeout=timeout) as r:
             raw = r.read()
             etag = r.headers.get('ETag', '')
-            return r.status, json.loads(raw) if raw else {}, etag
+            try:
+                body = json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                snippet = raw[:500].decode('utf-8', errors='replace')
+                sys.exit(f'Non-JSON response from {url} (HTTP {r.status}): {snippet}')
+            return r.status, body, etag
     except error.HTTPError as e:
         return e.code, {}, ''
     except Exception as ex:
