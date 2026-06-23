@@ -34,7 +34,7 @@ REGISTER_RESPONSE=$(curl -sf -D - -X POST "$SHOPWARE_URL/store-api/account/regis
       \"city\": \"Berlin\",
       \"countryId\": \"019e77c7b1d771e594804b0ab7ed9071\"
     },
-    \"storefrontUrl\": \"http://shopware-fe.lan.internal:3000\"
+    \"storefrontUrl\": \"${SHOPWARE_STOREFRONT_URL:-$SHOPWARE_URL}\"
   }")
 
 CONTEXT_TOKEN=$(echo "$REGISTER_RESPONSE" | grep -i "sw-context-token:" | awk '{print $2}' | tr -d '\r')
