@@ -4,9 +4,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/../.env.test"
 
+CF_ARGS=()
+if [[ -n "${CF_ACCESS_CLIENT_ID:-}" && -n "${CF_ACCESS_CLIENT_SECRET:-}" ]]; then
+  CF_ARGS=(-H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET")
+fi
+
 # 1. Gast-Kontext anlegen
 CONTEXT_TOKEN=$(curl -sf -X GET "$SHOPWARE_URL/store-api/context" \
   -H "sw-access-key: $SHOPWARE_STORE_ACCESS_KEY" \
+  "${CF_ARGS[@]}" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
 echo "✓ Context token: $CONTEXT_TOKEN"
 
@@ -15,6 +21,7 @@ REGISTER_RESPONSE=$(curl -sf -D - -X POST "$SHOPWARE_URL/store-api/account/regis
   -H "sw-access-key: $SHOPWARE_STORE_ACCESS_KEY" \
   -H "sw-context-token: $CONTEXT_TOKEN" \
   -H "Content-Type: application/json" \
+  "${CF_ARGS[@]}" \
   -d "{
     \"email\": \"testorder+$(date +%s)@example.com\",
     \"password\": \"Test1234!\",
@@ -38,13 +45,14 @@ curl -sf -X POST "$SHOPWARE_URL/store-api/checkout/cart/line-item" \
   -H "sw-access-key: $SHOPWARE_STORE_ACCESS_KEY" \
   -H "sw-context-token: $CONTEXT_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{
-    "items": [{
-      "type": "product",
-      "referencedId": "11dc680240b04f469ccba354cbf0b967",
-      "quantity": 1
+  "${CF_ARGS[@]}" \
+  -d "{
+    \"items\": [{
+      \"type\": \"product\",
+      \"referencedId\": \"$SHOPWARE_TEST_PRODUCT_ID\",
+      \"quantity\": 1
     }]
-  }' > /dev/null
+  }" > /dev/null
 echo "✓ Product added to cart"
 
 # 4. Order abschicken
@@ -52,6 +60,7 @@ ORDER=$(curl -sf -X POST "$SHOPWARE_URL/store-api/checkout/order" \
   -H "sw-access-key: $SHOPWARE_STORE_ACCESS_KEY" \
   -H "sw-context-token: $CONTEXT_TOKEN" \
   -H "Content-Type: application/json" \
+  "${CF_ARGS[@]}" \
   -d '{}')
 
 ORDER_ID=$(echo "$ORDER" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
