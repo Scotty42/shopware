@@ -17,6 +17,9 @@ final class ErpSyncPolicy
     /** customFields key carrying the acknowledgement timestamp. */
     public const FIELD = 'erpSyncedAt';
 
+    /** customFields key carrying the ERP's own order identifier. */
+    public const FIELD_ERP_ID = 'erpOrderId';
+
     /**
      * @param array<string,mixed>|null $customFields
      */
@@ -31,12 +34,14 @@ final class ErpSyncPolicy
      *
      * @return array{id:string,customFields:array<string,string>}
      */
-    public function acknowledgementPatch(string $orderId, \DateTimeInterface $now): array
+    public function acknowledgementPatch(string $orderId, \DateTimeInterface $now, ?string $erpOrderId = null): array
     {
-        return [
-            'id'           => $orderId,
-            'customFields' => [self::FIELD => $now->format(\DateTimeInterface::ATOM)],
-        ];
+        $customFields = [self::FIELD => $now->format(\DateTimeInterface::ATOM)];
+        if ($erpOrderId !== null) {
+            $customFields[self::FIELD_ERP_ID] = $erpOrderId;
+        }
+
+        return ['id' => $orderId, 'customFields' => $customFields];
     }
 
     /**
@@ -47,6 +52,7 @@ final class ErpSyncPolicy
      * @param array<string,array<string,mixed>|null> $existingCustomFieldsById
      *        map orderId => its customFields (or null) for every order that exists
      * @param list<string> $requestedIds
+     * @param array<string,string> $erpOrderIds optional map of shopwareId => erpOrderId
      *
      * @return array{
      *     patches: list<array{id:string,customFields:array<string,string>}>,
@@ -55,7 +61,7 @@ final class ErpSyncPolicy
      *     notFound: list<string>
      * }
      */
-    public function planAcknowledgement(array $existingCustomFieldsById, array $requestedIds, \DateTimeInterface $now): array
+    public function planAcknowledgement(array $existingCustomFieldsById, array $requestedIds, \DateTimeInterface $now, array $erpOrderIds = []): array
     {
         $patches = [];
         $acknowledged = [];
@@ -73,7 +79,7 @@ final class ErpSyncPolicy
                 continue;
             }
 
-            $patches[] = $this->acknowledgementPatch($id, $now);
+            $patches[] = $this->acknowledgementPatch($id, $now, $erpOrderIds[$id] ?? null);
             $acknowledged[] = $id;
         }
 

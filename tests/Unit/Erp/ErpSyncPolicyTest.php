@@ -43,6 +43,16 @@ class ErpSyncPolicyTest extends TestCase
 
         self::assertSame(str_repeat('a', 32), $patch['id']);
         self::assertSame('2026-06-03T08:30:00+00:00', $patch['customFields']['erpSyncedAt']);
+        self::assertArrayNotHasKey('erpOrderId', $patch['customFields']);
+    }
+
+    public function testAcknowledgementPatchWithErpOrderId(): void
+    {
+        $now = new \DateTimeImmutable('2026-06-03T08:30:00+00:00');
+        $patch = $this->policy->acknowledgementPatch(str_repeat('a', 32), $now, 'SO-12345');
+
+        self::assertSame('2026-06-03T08:30:00+00:00', $patch['customFields']['erpSyncedAt']);
+        self::assertSame('SO-12345', $patch['customFields']['erpOrderId']);
     }
 
     public function testPlanPartitionsRequestedIds(): void
@@ -67,6 +77,37 @@ class ErpSyncPolicyTest extends TestCase
         self::assertCount(2, $plan['patches']);
         self::assertSame($a, $plan['patches'][0]['id']);
         self::assertSame('2026-06-03T09:00:00+00:00', $plan['patches'][0]['customFields']['erpSyncedAt']);
+        self::assertArrayNotHasKey('erpOrderId', $plan['patches'][0]['customFields']);
+    }
+
+    public function testPlanStoresErpOrderIdInPatch(): void
+    {
+        $a = str_repeat('a', 32);
+        $b = str_repeat('b', 32);
+        $existing = [$a => null, $b => null];
+        $now = new \DateTimeImmutable('2026-06-03T09:00:00+00:00');
+
+        $plan = $this->policy->planAcknowledgement(
+            $existing,
+            [$a, $b],
+            $now,
+            [$a => 'SO-12345'],  // only $a has an ERP order id
+        );
+
+        self::assertSame('SO-12345', $plan['patches'][0]['customFields']['erpOrderId']);
+        self::assertArrayNotHasKey('erpOrderId', $plan['patches'][1]['customFields']);
+    }
+
+    public function testPlanDoesNotUpdateErpOrderIdWhenAlreadySynced(): void
+    {
+        $a = str_repeat('a', 32);
+        $existing = [$a => ['erpSyncedAt' => '2026-05-01T00:00:00+00:00']];
+        $now = new \DateTimeImmutable('2026-06-03T09:00:00+00:00');
+
+        $plan = $this->policy->planAcknowledgement($existing, [$a], $now, [$a => 'SO-99999']);
+
+        self::assertSame([], $plan['patches']);
+        self::assertSame([$a], $plan['alreadySynced']);
     }
 
     public function testPlanDeduplicatesRequestedIds(): void

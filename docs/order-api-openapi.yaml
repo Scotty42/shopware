@@ -756,6 +756,20 @@ paths:
                   maxItems: 500
                   items:
                     type: string
+                erpOrderIds:
+                  type: object
+                  description: |
+                    Optional map of Shopware order id → ERP order id. When present,
+                    the ERP's own order number (e.g. a NAV Sales Order No) is stored
+                    in `customFields.erpOrderId` alongside `erpSyncedAt`. Only ids
+                    that are newly acknowledged receive this value; already-synced
+                    orders are not updated (first-write-wins, same as `erpSyncedAt`).
+                    Keys follow the same id format as `orderIds`; values are
+                    non-empty strings of at most 100 characters.
+                  additionalProperties:
+                    type: string
+                    minLength: 1
+                    maxLength: 100
       responses:
         '200':
           description: Acknowledgement summary.

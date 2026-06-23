@@ -208,7 +208,7 @@
       ]
     },
     {
-      "_comment": "Step 3 — Acknowledge. Marks the order as ERP-synced; removes it from the pull queue.",
+      "_comment": "Step 3 — Acknowledge. Marks the order as ERP-synced and records the ERP's own order id; removes it from the pull queue.",
       "type": "import",
       "_id": "pp_acknowledge",
       "name": "Acknowledge order as ERP-synced",
@@ -219,11 +219,22 @@
         "method":      "POST",
         "mediaType":   "json",
         "body": {
-          "orderIds": ["{{data.id}}"]
+          "orderIds": ["{{data.id}}"],
+          "erpOrderIds": {
+            "{{data.id}}": "{{data.navOrderId}}"
+          }
         },
         "successStatusCode":  200,
         "errorStatusCode":    [400, 401, 403, 422, 500]
       },
+      "_comment_erp_order_id": [
+        "data.navOrderId is the ERP order number returned by the NAV import step",
+        "(mapped via responseMapping.fields extract:'id' generate:'navOrderId').",
+        "It is stored in Shopware as customFields.erpOrderId alongside erpSyncedAt.",
+        "If NAV did not return an order id (error path), omit the erpOrderIds key",
+        "or map it to an empty string — the API will reject empty values with 422,",
+        "so guard with a Celigo conditional or preSavePage hook as needed."
+      ],
       "_comment_idempotency": [
         "POST /erp/orders/acknowledge is idempotent: already-synced order IDs",
         "are returned in the 'alreadySynced' array without an error.",
