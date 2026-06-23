@@ -19,6 +19,11 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/../.env.test"
 
+CF_ARGS=()
+if [[ -n "${CF_ACCESS_CLIENT_ID:-}" && -n "${CF_ACCESS_CLIENT_SECRET:-}" ]]; then
+  CF_ARGS=(-H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET")
+fi
+
 BASE="$SHOPWARE_URL/api/order-integration/v1"
 PASS=0
 FAIL=0
@@ -33,6 +38,7 @@ idem() { python3 -c "import uuid;print(uuid.uuid4())"; }            # fresh Idem
 
 TOKEN=$(curl -sf -X POST "$SHOPWARE_URL/api/oauth/token" \
   -H 'Content-Type: application/json' \
+  "${CF_ARGS[@]}" \
   -d "{\"grant_type\":\"password\",\"client_id\":\"administration\",\"username\":\"$SHOPWARE_ADMIN_USER\",\"password\":\"$SHOPWARE_ADMIN_PASSWORD\",\"scopes\":\"write\"}" \
   | jqpy "d['access_token']")
 
@@ -46,7 +52,7 @@ fi
 ok "Token acquired"
 echo "  (mutations pinned to Prefer: respond-sync — synchronous contract, independent of ORDER_INTEGRATION_ASYNC_WRITES)"
 
-AUTH=(-H "Authorization: Bearer $TOKEN")
+AUTH=(-H "Authorization: Bearer $TOKEN" "${CF_ARGS[@]}")
 JSON=(-H "Content-Type: application/json")
 
 CUSTOMER_ID=$(curl -s "${AUTH[@]}" "$SHOPWARE_URL/api/customer?limit=1" | jqpy "d['data'][0]['id']")
@@ -71,8 +77,8 @@ COUNT=$(echo "$LIST" | jqpy "len(d['items'])")
 assert_status "GET /orders?status=open returns 200" "200" "$(status_code "${AUTH[@]}" "$BASE/orders?status=open")"
 assert_status "GET /orders/{id} unknown returns 404" "404" "$(status_code "${AUTH[@]}" "$BASE/orders/b878ba70bf7d47a12ae61ad5b1dc8582")"
 assert_eq "404 has RFC 9457 code" "order.not_found" "$(curl -s "${AUTH[@]}" "$BASE/orders/b878ba70bf7d47a12ae61ad5b1dc8582" | jqpy "d['code']")"
-assert_status "Invalid token returns 401" "401" "$(status_code -H 'Authorization: Bearer invalid-token' "$BASE/orders")"
-assert_status "No token returns 401" "401" "$(status_code "$BASE/orders")"
+assert_status "Invalid token returns 401" "401" "$(status_code "${CF_ARGS[@]}" -H 'Authorization: Bearer invalid-token' "$BASE/orders")"
+assert_status "No token returns 401" "401" "$(status_code "${CF_ARGS[@]}" "$BASE/orders")"
 
 echo ""
 echo "=== Pagination (keyset cursor) ==="

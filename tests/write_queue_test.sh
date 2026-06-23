@@ -14,6 +14,11 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/../.env.test"
 
+CF_ARGS=()
+if [[ -n "${CF_ACCESS_CLIENT_ID:-}" && -n "${CF_ACCESS_CLIENT_SECRET:-}" ]]; then
+  CF_ARGS=(-H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET")
+fi
+
 PASS=0
 FAIL=0
 ok() { echo "✓ $1"; ((PASS++)) || true; }
@@ -21,11 +26,14 @@ bad() { echo "✗ $1"; ((FAIL++)) || true; }
 
 TOKEN=$(curl -sf -X POST "$SHOPWARE_URL/api/oauth/token" \
   -H 'Content-Type: application/json' \
+  "${CF_ARGS[@]}" \
   -d "{\"grant_type\":\"password\",\"client_id\":\"administration\",\"username\":\"$SHOPWARE_ADMIN_USER\",\"password\":\"$SHOPWARE_ADMIN_PASSWORD\",\"scopes\":\"write\"}" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 [[ -n "$TOKEN" ]] && ok "Token acquired" || bad "Token acquisition"
 
-CUSTOMER_ID=$(curl -sf -H "Authorization: Bearer $TOKEN" "$SHOPWARE_URL/api/customer?limit=1" \
+AUTH=(-H "Authorization: Bearer $TOKEN" "${CF_ARGS[@]}")
+
+CUSTOMER_ID=$(curl -sf "${AUTH[@]}" "$SHOPWARE_URL/api/customer?limit=1" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['data'][0]['id'])")
 [[ -n "$CUSTOMER_ID" ]] && ok "Customer ID fetched ($CUSTOMER_ID)" || { bad "Customer ID fetch failed"; exit 1; }
 
@@ -36,7 +44,7 @@ JSON
 
 # 1. async POST returns 202 + a job id
 RESP=$(curl -s -w "\n%{http_code}" -X POST "$SHOPWARE_URL/api/order-integration/v1/orders" \
-  -H "Authorization: Bearer $TOKEN" \
+  "${AUTH[@]}" \
   -H 'Content-Type: application/json' \
   -H 'Prefer: respond-async' \
   -H "Idempotency-Key: $(python3 -c 'import uuid;print(uuid.uuid4())')" \
@@ -49,7 +57,7 @@ JOB_ID=$(echo "$JSON_BODY" | python3 -c "import sys,json; print(json.load(sys.st
 [[ -n "$JOB_ID" ]] && ok "202 carries a jobId" || bad "202 carries a jobId"
 
 # 2. job is retrievable
-JOB_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $TOKEN" \
+JOB_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${AUTH[@]}" \
   "$SHOPWARE_URL/api/order-integration/v1/jobs/$JOB_ID")
 [[ "$JOB_STATUS" == "200" ]] && ok "GET /v1/jobs/{id} returns 200" || bad "GET /v1/jobs/{id} returns 200 — got $JOB_STATUS"
 
@@ -60,7 +68,7 @@ fi
 
 ORDER_ID=""
 for _ in $(seq 1 15); do
-  J=$(curl -s -H "Authorization: Bearer $TOKEN" "$SHOPWARE_URL/api/order-integration/v1/jobs/$JOB_ID")
+  J=$(curl -s "${AUTH[@]}" "$SHOPWARE_URL/api/order-integration/v1/jobs/$JOB_ID")
   S=$(echo "$J" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))")
   if [[ "$S" == "succeeded" ]]; then
     ORDER_ID=$(echo "$J" | python3 -c "import sys,json; print((json.load(sys.stdin).get('result') or {}).get('orderId',''))")
@@ -73,7 +81,7 @@ done
 
 # 4. the created order is now readable
 if [[ -n "$ORDER_ID" ]]; then
-  OS=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $TOKEN" \
+  OS=$(curl -s -o /dev/null -w "%{http_code}" "${AUTH[@]}" \
     "$SHOPWARE_URL/api/order-integration/v1/orders/$ORDER_ID")
   [[ "$OS" == "200" ]] && ok "Created order is readable" || bad "Created order readable — got $OS"
 fi
