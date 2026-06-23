@@ -223,7 +223,18 @@ def main():
             print(f'  {short}  [{status}] → would cancel')
             continue
 
-        _, _, etag = http_get(f'{base}/orders/{oid}', token, cf_headers)
+        # Fetch ETag via HEAD to avoid downloading/parsing full order JSON
+        req = request.Request(f'{base}/orders/{oid}', method='HEAD')
+        req.add_header('Authorization', 'Bearer ' + token)
+        req.add_header('User-Agent', USER_AGENT)
+        for k, v in cf_headers.items():
+            req.add_header(k, v)
+        try:
+            with request.urlopen(req, timeout=20) as r:
+                etag = r.headers.get('ETag', '')
+        except error.HTTPError as e:
+            etag = e.headers.get('ETag', '')
+
         if not etag:
             print(f'  {short}  [{status}] → no ETag returned, skipping cancel')
             cancel_failed += 1
