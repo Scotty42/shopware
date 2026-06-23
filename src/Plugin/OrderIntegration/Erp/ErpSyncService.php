@@ -26,11 +26,12 @@ class ErpSyncService
      * Marks the given orders as synced. Idempotent: orders already synced keep
      * their original timestamp; unknown ids are reported, not failed.
      *
-     * @param list<string> $orderIds
+     * @param list<string>          $orderIds
+     * @param array<string,string>  $erpOrderIds optional map of shopwareId => erpOrderId
      *
      * @return array{acknowledged:list<string>,alreadySynced:list<string>,notFound:list<string>}
      */
-    public function acknowledge(array $orderIds, \DateTimeInterface $now, Context $context): array
+    public function acknowledge(array $orderIds, \DateTimeInterface $now, Context $context, array $erpOrderIds = []): array
     {
         $orderIds = array_values(array_unique($orderIds));
 
@@ -43,7 +44,7 @@ class ErpSyncService
             $existing[$order->getId()] = $order->getCustomFields();
         }
 
-        $plan = $this->policy->planAcknowledgement($existing, $orderIds, $now);
+        $plan = $this->policy->planAcknowledgement($existing, $orderIds, $now, $erpOrderIds);
 
         if (!empty($plan['patches'])) {
             $this->orderRepository->update($plan['patches'], $context);

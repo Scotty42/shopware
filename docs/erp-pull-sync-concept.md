@@ -27,17 +27,21 @@ is the complement the iPaaS asked for:
 Pull and push coexist: a webhook subscriber can still react in real time, while
 the iPaaS uses pull as its reliable system of record.
 
-## 2. The "known to ERP" flag
+## 2. The "known to ERP" fields
 
-The flag is stored as an ISO-8601 timestamp under
-`order.customFields.erpSyncedAt`.
+Two customFields are written on acknowledge:
+
+| Field | Type | Purpose |
+| --- | --- | --- |
+| `erpSyncedAt` | ISO-8601 timestamp | When the order was first acknowledged. Controls the pull queue (absent = unacknowledged). |
+| `erpOrderId` | string (≤ 100 chars) | The ERP's own order number (e.g. NAV Sales Order No). Written only when the caller supplies it; omitted otherwise. |
 
 | Decision | Rationale |
-|---|---|
-| **customField, not a new column** | No Shopware migration/entity extension; works on stock 6.6/6.7. The DAL can still filter on `customFields.erpSyncedAt`. |
+| --- | --- |
+| **customFields, not new columns** | No Shopware migration/entity extension; works on stock 6.6/6.7. The DAL can still filter on `customFields.erpSyncedAt`. |
 | **Timestamp, not boolean** | Records *when* the ERP acknowledged — useful for audit, SLA, and debugging double-sends. Absent/null = not yet synced. |
-| **Set once (idempotent)** | Re-acknowledging keeps the first timestamp; the queue filter only cares about presence. |
-| **Exposed via `customFields`** | OrderMapper already returns `customFields` verbatim, so `erpSyncedAt` is visible on every Order payload with no mapper change. |
+| **Set once (idempotent)** | Re-acknowledging keeps the first timestamp; already-synced orders are not patched, so `erpOrderId` is also first-write-wins. |
+| **Exposed via `customFields`** | OrderMapper already returns `customFields` verbatim, so both fields are visible on every Order payload with no mapper change. |
 
 Resetting the flag (force a re-pull) is intentionally **out of scope** here — a
 later `DELETE .../erp-sync` or an admin reset can clear the customField. Noted as

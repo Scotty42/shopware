@@ -156,11 +156,32 @@ class ErpSyncController extends AbstractController
             $normalized[] = strtolower(str_replace('-', '', $id));
         }
 
+        // optional: map of shopwareId => erpOrderId (the ERP's own order number)
+        $rawErpOrderIds = $data['erpOrderIds'] ?? null;
+        $erpOrderIds = [];
+        if ($rawErpOrderIds !== null) {
+            if (!is_array($rawErpOrderIds)) {
+                $errors[] = ['pointer' => '/erpOrderIds', 'code' => 'invalid_type', 'message' => 'erpOrderIds must be an object mapping order ids to ERP order ids'];
+            } else {
+                foreach ($rawErpOrderIds as $shopwareId => $erpId) {
+                    if (!is_string($shopwareId) || !preg_match(self::ID_PATTERN, $shopwareId)) {
+                        $errors[] = ['pointer' => "/erpOrderIds/{$shopwareId}", 'code' => 'invalid_id', 'message' => 'key must be a 32-char hex id or a canonical UUID'];
+                        continue;
+                    }
+                    if (!is_string($erpId) || $erpId === '' || strlen($erpId) > 100) {
+                        $errors[] = ['pointer' => "/erpOrderIds/{$shopwareId}", 'code' => 'invalid_erp_order_id', 'message' => 'ERP order id must be a non-empty string of at most 100 characters'];
+                        continue;
+                    }
+                    $erpOrderIds[strtolower(str_replace('-', '', $shopwareId))] = $erpId;
+                }
+            }
+        }
+
         if (!empty($errors)) {
             throw new ValidationException($errors);
         }
 
-        $summary = $this->erpSyncService->acknowledge($normalized, new \DateTimeImmutable(), $context);
+        $summary = $this->erpSyncService->acknowledge($normalized, new \DateTimeImmutable(), $context, $erpOrderIds);
 
         return new JsonResponse([
             'acknowledged'  => $summary['acknowledged'],
