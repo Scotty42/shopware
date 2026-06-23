@@ -203,11 +203,6 @@ def main():
     orders = collect_all_orders(base, token, cf_headers)
     print(f'Found {len(orders)} order(s).\n')
 
-    if not orders:
-        print('Nothing to do.')
-        return
-
-    all_ids = [o['id'] for o in orders]
     cancelled_ok = 0
     cancel_failed = 0
 
