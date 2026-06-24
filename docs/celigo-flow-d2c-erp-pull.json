@@ -1,26 +1,50 @@
 {
   "_type": "template",
   "name": "D2C ERP Order Pull — Shopware Order Integration",
-  "version": "1.0",
-  "description": "Pulls unacknowledged D2C orders from GET /erp/orders (oldest-first, limit=1 per page), maps them to the SCA push payload shape, and acknowledges them via POST /erp/orders/acknowledge after successful ERP posting. Handles Shopware OAuth 2.0 (password grant via JSON body) and optional Cloudflare Access WAF headers.",
+  "version": "1.1",
+  "description": "Pulls unacknowledged D2C orders from GET /erp/orders (oldest-first, limit=1 per page), maps them to the SCA push payload shape, and acknowledges them via POST /erp/orders/acknowledge after successful ERP posting. Authenticates via Shopware OAuth 2.0 client_credentials grant (Shopware Integration). Optional Cloudflare Access WAF headers also supported.",
 
   "_readme": [
     "IMPORT INSTRUCTIONS",
-    "1. Replace every {{PLACEHOLDER}} value in the 'settings' block below.",
-    "2. Import this file via Celigo → Resources → Templates → Import.",
-    "3. The connection will appear under Connections; verify the token test succeeds.",
-    "4. Activate the flow; it polls GET /erp/orders?limit=1 on each run.",
-    "5. Wire the 'pageProcessors' section to your ERP/NAV import adaptor.",
-    "6. The acknowledge step fires automatically after the import reports success."
+    "1. In Shopware Admin create a dedicated Integration (see _shopware_setup below).",
+    "2. Replace every {{PLACEHOLDER}} value in the 'settings' block below.",
+    "3. Import this file via Celigo → Resources → Templates → Import.",
+    "4. Open the imported Connection and verify the token test succeeds.",
+    "5. Activate the flow; it polls GET /erp/orders?limit=1 on each run.",
+    "6. Wire the 'pageProcessors' section to your ERP/NAV import adaptor.",
+    "7. The acknowledge step fires automatically after the import reports success."
+  ],
+
+  "_shopware_setup": [
+    "CREATE A SHOPWARE INTEGRATION (required before configuring Celigo)",
+    "",
+    "Shopware Admin → Settings → System → Integrations → Add Integration",
+    "  Name:        Celigo ERP Order Pull (or any descriptive label)",
+    "  Active:      yes",
+    "  Permissions: at minimum the following ACL roles must be assigned:",
+    "    - order:read            (for GET /erp/orders)",
+    "    - order:update          (for POST /erp/orders/acknowledge)",
+    "    - custom_fields:read    (acknowledgement reads/writes erpSyncedAt)",
+    "    Tip: assign the built-in 'order-management' role to cover all of the above.",
+    "",
+    "After saving, Shopware displays a one-time clientId + clientSecret.",
+    "Copy both values immediately — the secret is not shown again.",
+    "Use these as SHOPWARE_CLIENT_ID and SHOPWARE_CLIENT_SECRET below.",
+    "",
+    "WHY an Integration and not an admin user account?",
+    "  Shopware's password grant (grant_type=password) uses a non-standard JSON body",
+    "  that Celigo's native OAuth2 connector cannot produce. Shopware Integrations use",
+    "  the standard client_credentials grant, which Celigo's HTTP connector handles",
+    "  natively via the tokenConfig block below — no custom workarounds needed."
   ],
 
   "settings": {
-    "shopwareUrl":     "{{SHOPWARE_URL}}",
-    "adminUser":       "{{SHOPWARE_ADMIN_USER}}",
-    "adminPassword":   "{{SHOPWARE_ADMIN_PASSWORD}}",
-    "cfClientId":      "{{CF_ACCESS_CLIENT_ID}}",
-    "cfClientSecret":  "{{CF_ACCESS_CLIENT_SECRET}}",
-    "salesChannelId":  "{{SHOPWARE_SALES_CHANNEL_ID}}"
+    "shopwareUrl":      "{{SHOPWARE_URL}}",
+    "clientId":         "{{SHOPWARE_CLIENT_ID}}",
+    "clientSecret":     "{{SHOPWARE_CLIENT_SECRET}}",
+    "cfClientId":       "{{CF_ACCESS_CLIENT_ID}}",
+    "cfClientSecret":   "{{CF_ACCESS_CLIENT_SECRET}}",
+    "salesChannelId":   "{{SHOPWARE_SALES_CHANNEL_ID}}"
   },
 
   "connection": {
@@ -33,9 +57,20 @@
       "mediaType": "json",
 
       "_comment_auth": [
-        "Shopware uses OAuth 2.0 password grant with a JSON body (not form-encoded).",
-        "Celigo's 'custom token' auth type handles this: Celigo POSTs the tokenConfig",
-        "body to tokenURI and extracts the token from the JSON response."
+        "AUTH: OAuth 2.0 client_credentials grant via Shopware Integration.",
+        "",
+        "Celigo's HTTP connector 'token' auth type handles this: on each flow run",
+        "Celigo POSTs the tokenConfig body to tokenURI and caches the returned",
+        "Bearer token until expires_in seconds have elapsed.",
+        "",
+        "Celigo UI equivalent (if configuring manually instead of importing):",
+        "  Connection → Authentication → Token → Token Config",
+        "    Token URI:   <shopwareUrl>/api/oauth/token",
+        "    Method:      POST",
+        "    Media type:  JSON",
+        "    Body:        { see tokenConfig.body below }",
+        "    Token path:  access_token",
+        "    Expiry path: expires_in"
       ],
       "auth": {
         "type": "token",
@@ -46,20 +81,40 @@
           "token":      ""
         },
         "tokenConfig": {
-          "uri":    "/api/oauth/token",
-          "method": "POST",
+          "uri":       "/api/oauth/token",
+          "method":    "POST",
           "mediaType": "json",
           "body": {
-            "grant_type": "password",
-            "client_id":  "administration",
-            "username":   "{{settings.adminUser}}",
-            "password":   "{{settings.adminPassword}}",
-            "scopes":     "write"
+            "grant_type":    "client_credentials",
+            "client_id":     "{{settings.clientId}}",
+            "client_secret": "{{settings.clientSecret}}"
           },
           "tokenPath":   "access_token",
           "expiresPath": "expires_in"
         }
       },
+
+      "_comment_auth_fallback": [
+        "FALLBACK — password grant (interim use only, before Integration is created)",
+        "",
+        "If a Shopware Integration has not been created yet and you need to test",
+        "connectivity immediately, replace tokenConfig.body above with:",
+        "",
+        "  \"body\": {",
+        "    \"grant_type\": \"password\",",
+        "    \"client_id\":  \"administration\",",
+        "    \"username\":   \"{{settings.adminUser}}\",",
+        "    \"password\":   \"{{settings.adminPassword}}\"",
+        "  }",
+        "",
+        "And add to settings:",
+        "  \"adminUser\":     \"{{SHOPWARE_ADMIN_USER}}\",",
+        "  \"adminPassword\": \"{{SHOPWARE_ADMIN_PASSWORD}}\"",
+        "",
+        "IMPORTANT: The password grant uses an admin account, which is a security",
+        "anti-pattern for service integrations. Migrate to an Integration (above)",
+        "as soon as the Shopware backend is configured."
+      ],
 
       "_comment_cf": [
         "Cloudflare Access service-token headers.",
@@ -125,7 +180,6 @@
         "Key fields available for ERP mapping — see field-mapping section below."
       ],
 
-      "adaptorType": "HTTPExport",
       "transform": {
         "_comment": "Optional pre-processor: extract the order id for use in the acknowledge step.",
         "type": "expression",
