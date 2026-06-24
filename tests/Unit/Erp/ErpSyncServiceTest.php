@@ -29,9 +29,7 @@ class ErpSyncServiceTest extends TestCase
         return $order;
     }
 
-    private function makeSearchResult(array $orders): EntitySearchResult
-    {
-        $collection = new EntityCollection($orders);
+        $collection = new OrderCollection($orders);
         $result = $this->createStub(EntitySearchResult::class);
         $result->method('getEntities')->willReturn($collection);
 
