@@ -63,13 +63,20 @@ def http_get(url, token, extra_headers=None, user_agent=None, timeout=20):
 
 
 def acquire_token(env, extra_headers=None, user_agent=None):
-    body = json.dumps({
-        'grant_type': 'password',
-        'client_id': 'administration',
-        'username': env['SHOPWARE_ADMIN_USER'],
-        'password': env['SHOPWARE_ADMIN_PASSWORD'],
-        'scopes': 'write',
-    }).encode()
+    if env.get('SHOPWARE_CLIENT_ID') and env.get('SHOPWARE_CLIENT_SECRET'):
+        payload = {
+            'grant_type':    'client_credentials',
+            'client_id':     env['SHOPWARE_CLIENT_ID'],
+            'client_secret': env['SHOPWARE_CLIENT_SECRET'],
+        }
+    else:
+        payload = {
+            'grant_type': 'password',
+            'client_id':  'administration',
+            'username':   env['SHOPWARE_ADMIN_USER'],
+            'password':   env['SHOPWARE_ADMIN_PASSWORD'],
+        }
+    body = json.dumps(payload).encode()
     req = request.Request(env['SHOPWARE_URL'].rstrip('/') + '/api/oauth/token', data=body)
     req.add_header('Content-Type', 'application/json')
     req.add_header('Accept', 'application/json')
@@ -280,10 +287,18 @@ def main():
     env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             '..', '.env.test')
     env = load_env(env_path)
-    missing = [k for k in ('SHOPWARE_URL', 'SHOPWARE_ADMIN_USER', 'SHOPWARE_ADMIN_PASSWORD')
-               if not env.get(k)]
+    missing = [k for k in ('SHOPWARE_URL',) if not env.get(k)]
     if missing:
         sys.exit('Missing in .env.test: ' + ', '.join(missing))
+
+    has_integration = env.get('SHOPWARE_CLIENT_ID') and env.get('SHOPWARE_CLIENT_SECRET')
+    has_admin       = env.get('SHOPWARE_ADMIN_USER') and env.get('SHOPWARE_ADMIN_PASSWORD')
+    if not has_integration and not has_admin:
+        sys.exit(
+            'Missing in .env.test: set either\n'
+            '  SHOPWARE_CLIENT_ID + SHOPWARE_CLIENT_SECRET  (preferred — Shopware Integration)\n'
+            '  or SHOPWARE_ADMIN_USER + SHOPWARE_ADMIN_PASSWORD  (fallback password grant)'
+        )
 
     # Cloudflare Access service-token headers — only sent when both vars are set.
     # Required when SHOPWARE_URL is a public endpoint protected by CF Access WAF;
@@ -303,8 +318,9 @@ def main():
 
     base = env['SHOPWARE_URL'].rstrip('/') + '/api/order-integration/v1'
 
-    via = 'via Cloudflare Access service token' if cf_headers else 'directly'
-    print(f'Authenticating against {env["SHOPWARE_URL"]} {via} …')
+    grant = 'client_credentials' if has_integration else 'password grant'
+    via   = 'via Cloudflare Access service token' if cf_headers else 'directly'
+    print(f'Authenticating against {env["SHOPWARE_URL"]} {via} ({grant}) …')
     token = acquire_token(env, cf_headers, user_agent=user_agent)
 
     url = f'{base}/erp/orders?limit={args.limit}'
