@@ -232,7 +232,7 @@
         "(mapped via responseMapping.fields extract:'id' generate:'navOrderId').",
         "It is stored in Shopware as customFields.erpOrderId alongside erpSyncedAt.",
         "If NAV did not return an order id (error path), omit the erpOrderIds key",
-        "or map it to an empty string — the API will reject empty values with 422,",
+        "(or omit the mapping entry) — the API rejects empty values with 422,",
         "so guard with a Celigo conditional or preSavePage hook as needed."
       ],
       "_comment_idempotency": [
