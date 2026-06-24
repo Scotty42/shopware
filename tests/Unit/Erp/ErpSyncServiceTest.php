@@ -5,8 +5,8 @@ namespace Scotty42\OrderIntegration\Tests\Unit\Erp;
 use PHPUnit\Framework\TestCase;
 use Scotty42\OrderIntegration\Erp\ErpSyncPolicy;
 use Scotty42\OrderIntegration\Erp\ErpSyncService;
+use Shopware\Core\Checkout\Order\OrderCollection;
 use Shopware\Core\Framework\Context;
-use Shopware\Core\Framework\DataAbstractionLayer\EntityCollection;
 use Shopware\Core\Framework\DataAbstractionLayer\EntityRepository;
 use Shopware\Core\Framework\DataAbstractionLayer\Search\EntitySearchResult;
 
