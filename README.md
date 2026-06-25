@@ -292,19 +292,57 @@ cp .env.test.dist .env.test
 | Variable | Description |
 |---|---|
 | `SHOPWARE_URL` | Base URL of the Shopware backend (local, internal, or public test/staging URL) |
-| `CF_ACCESS_CLIENT_ID` | Optional Cloudflare Access service token client ID. Required only when `SHOPWARE_URL` is protected by Cloudflare Access. |
-| `CF_ACCESS_CLIENT_SECRET` | Optional Cloudflare Access service token secret. Required only when `SHOPWARE_URL` is protected by Cloudflare Access. |
-| `SHOPWARE_ADMIN_USER` | Shopware admin username (for password grant token) |
+| `CF_ACCESS_CLIENT_ID` | Cloudflare Access service token client ID. Required when `SHOPWARE_URL` is behind Cloudflare Access (see note below). |
+| `CF_ACCESS_CLIENT_SECRET` | Cloudflare Access service token secret. Required when `SHOPWARE_URL` is behind Cloudflare Access. |
+| `SHOPWARE_ADMIN_USER` | Shopware admin username (password grant fallback — use Integration credentials for automated flows) |
 | `SHOPWARE_ADMIN_PASSWORD` | Shopware admin password |
 | `SHOPWARE_STORE_ACCESS_KEY` | Store API access key of the Headless Sales Channel (starts with `SWSC...`) |
-| `SHOPWARE_INTEGRATION_ACCESS_KEY` | Access key of the dedicated Integration user (starts with `SWIA...`) — created once via Admin API |
-| `SHOPWARE_INTEGRATION_SECRET` | Secret of the Integration user — set at creation time, stored hashed in Shopware |
+| `SHOPWARE_INTEGRATION_ACCESS_KEY` | `client_id` for the dedicated Shopware Integration (starts with `SWIA...`). Used by `celigo_pull.py` and the Celigo flow. Created in Admin → Settings → System → Integrations. |
+| `SHOPWARE_INTEGRATION_SECRET` | `client_secret` for the Integration. Set at creation time, not retrievable afterwards. |
 | `SHOPWARE_SALES_CHANNEL_ID` | Hex ID of the Headless Sales Channel used for test order creation |
 | `SHOPWARE_TEST_PRODUCT_ID` | Hex ID of an active product used in test orders |
 
-Cloudflare note: the CF variables are typically needed in test/staging where
-public endpoints are Access-protected. For production, they are only relevant
-if the production ingress is also behind Cloudflare Access / WAF.
+#### Cloudflare Access and WAF
+
+When the `SHOPWARE_URL` is a public endpoint behind **Cloudflare Access**, two
+separate CF systems interact with every HTTP client:
+
+**1. Bot Fight Mode (WAF)**
+Cloudflare's Bot Fight Mode challenges requests that look non-browser (no JS
+execution, non-browser User-Agent, unexpected TLS fingerprint). All test scripts
+and iPaaS tools (Celigo, etc.) fall into this category and will receive a
+`403` Managed Challenge HTML page.
+
+Fix: in Cloudflare → Security → WAF → Custom Rules, add a **Skip** rule for
+the API path:
+
+```text
+Field: URI Path / contains / /api/
+Action: Skip → Bot Fight Mode
+```
+
+**2. Cloudflare Access (Zero Trust)**
+CF Access validates a service token on every request, including the OAuth2
+token endpoint (`POST /api/oauth/token`). OAuth2 clients (including Celigo's
+built-in OAuth2 adaptor) fetch a token before any connection-level headers
+are applied, so the token request arrives at CF Access without a service token
+and is rejected with `403 Forbidden`.
+
+Fix: in CF Zero Trust → Access → Applications, create a second application
+scoped specifically to the token path with a **Bypass** policy:
+
+```text
+Domain + path: <your-shopware-host>/api/oauth/token
+Policy action: Bypass / Everyone
+```
+
+The existing application continues to protect all other paths. After this,
+OAuth2 clients can fetch Shopware tokens freely; actual API calls still require
+the CF service token headers (`CF-Access-Client-Id`, `CF-Access-Client-Secret`).
+
+Both fixes are required when CF Access and Bot Fight Mode are both active. For
+local or VPN-only deployments where CF is not in the path, omit the CF
+variables entirely — the scripts detect their absence and skip the headers.
 
 ### Run tests
 

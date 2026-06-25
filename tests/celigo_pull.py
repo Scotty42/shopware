@@ -63,11 +63,11 @@ def http_get(url, token, extra_headers=None, user_agent=None, timeout=20):
 
 
 def acquire_token(env, extra_headers=None, user_agent=None):
-    if env.get('SHOPWARE_CLIENT_ID') and env.get('SHOPWARE_CLIENT_SECRET'):
+    if env.get('SHOPWARE_INTEGRATION_ACCESS_KEY') and env.get('SHOPWARE_INTEGRATION_SECRET'):
         payload = {
             'grant_type':    'client_credentials',
-            'client_id':     env['SHOPWARE_CLIENT_ID'],
-            'client_secret': env['SHOPWARE_CLIENT_SECRET'],
+            'client_id':     env['SHOPWARE_INTEGRATION_ACCESS_KEY'],
+            'client_secret': env['SHOPWARE_INTEGRATION_SECRET'],
         }
     else:
         payload = {
@@ -291,12 +291,12 @@ def main():
     if missing:
         sys.exit('Missing in .env.test: ' + ', '.join(missing))
 
-    has_integration = env.get('SHOPWARE_CLIENT_ID') and env.get('SHOPWARE_CLIENT_SECRET')
+    has_integration = env.get('SHOPWARE_INTEGRATION_ACCESS_KEY') and env.get('SHOPWARE_INTEGRATION_SECRET')
     has_admin       = env.get('SHOPWARE_ADMIN_USER') and env.get('SHOPWARE_ADMIN_PASSWORD')
     if not has_integration and not has_admin:
         sys.exit(
             'Missing in .env.test: set either\n'
-            '  SHOPWARE_CLIENT_ID + SHOPWARE_CLIENT_SECRET  (preferred — Shopware Integration)\n'
+            '  SHOPWARE_INTEGRATION_ACCESS_KEY + SHOPWARE_INTEGRATION_SECRET  (preferred — Shopware Integration)\n'
             '  or SHOPWARE_ADMIN_USER + SHOPWARE_ADMIN_PASSWORD  (fallback password grant)'
         )
 
