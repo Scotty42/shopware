@@ -80,6 +80,7 @@ class PdoWriteQueueTest extends TestCase
 
         self::assertCount(1, $claimed);
         self::assertSame(WriteCommand::STATUS_IN_PROGRESS, $claimed[0]->status);
+        self::assertSame(1, $claimed[0]->attempts);
     }
 
     public function testClaimSkipsInProgress(): void
@@ -123,6 +124,7 @@ class PdoWriteQueueTest extends TestCase
         self::assertSame('timeout', $fetched->lastError);
         self::assertNotNull($fetched->availableAt);
         self::assertGreaterThan($now, $fetched->availableAt);
+        self::assertSame(1, $fetched->attempts);
 
         // claim(1, now) must NOT re-claim it because available_at is in the future.
         $reClaimed = $this->queue->claim(1, $now);
@@ -160,7 +162,8 @@ class PdoWriteQueueTest extends TestCase
         self::assertSame(2, $deleted);
 
         $pdo  = self::$connectionProvider->pdo();
-        $stmt = $pdo->query('SELECT COUNT(*) FROM order_write_queue');
+        $stmt = $pdo->prepare('SELECT COUNT(*) FROM order_write_queue');
+        $stmt->execute();
         self::assertSame(0, (int) $stmt->fetchColumn());
     }
 
@@ -176,5 +179,10 @@ class PdoWriteQueueTest extends TestCase
         $this->queue->claim(1, $now);
 
         self::assertSame(2, $this->queue->depth());
+
+        // Claim the remaining 2 — all 3 rows are now in_progress, so depth()
+        // must return 0, proving it excludes in_progress rows.
+        $this->queue->claim(2, $now);
+        self::assertSame(0, $this->queue->depth());
     }
 }
