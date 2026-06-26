@@ -298,20 +298,26 @@ Scope-based. The facade owns the mapping (client → allowed scopes → Shopware
 
 ---
 
-## 7. Mapping to Shopware Admin API (facade internals)
+## 7. Mapping to Shopware internals (plugin implementation)
 
-| Facade operation | Shopware Admin API call |
+> **Architecture note.** This section was originally written for Option B (a
+> standalone facade calling the Shopware Admin API over HTTP). The implemented
+> solution is **Option D** — a Shopware plugin that calls Shopware's PHP services
+> **in-process** with no HTTP hop to the Admin API. The mapping below reflects the
+> in-process service calls used by the plugin.
+
+| Plugin operation | Shopware in-process call |
 |---|---|
-| `POST /v1/orders` | `POST /api/order` — but creating a fully calculated order via Admin API is hard. The realistic path is: build a cart via internal logic, then `POST /api/_action/order` or use the Store API in a server-to-server flow with a service customer. Implementation note for the facade team. |
-| `GET /v1/orders/{id}` | `GET /api/order/{id}?associations[lineItems][]&associations[deliveries][]&associations[transactions][]&associations[addresses][]` |
-| `GET /v1/orders` | `POST /api/search/order` with `Criteria` filter, sort, page. |
-| `PATCH /v1/orders/{id}` | `PATCH /api/order/{id}` — limited to safe mutable fields (`customFields`, `tags`, `customerComment`, addresses). |
-| `PUT /v1/orders/{id}/status` | `POST /api/_action/order/{orderId}/state/{transition}` — facade maps domain status to the right transition. |
-| `PUT /v1/orders/{id}/payment-status` | `POST /api/_action/order_transaction/{transactionId}/state/{transition}` |
-| `PUT /v1/orders/{id}/delivery-status` | `POST /api/_action/order_delivery/{deliveryId}/state/{transition}` |
-| `DELETE /v1/orders/{id}` (soft) | transitions order to `cancelled` via state transition. |
-| `DELETE /v1/orders/{id}?hard=true` | `DELETE /api/order/{id}` — Shopware blocks deletion if the order has bookkeeping-relevant state; we surface that as `409 Conflict`. |
-| `GET /v1/orders/{id}/events` | `POST /api/search/state-machine-history` filtered by entityId. |
+| `POST /v1/orders` | `CartService` + `OrderConverter` + `OrderPersister` — builds a cart from the request DTO, converts it to an order with correct pricing/tax/promotions, and persists it in a single transaction. |
+| `GET /v1/orders/{id}` | `EntityRepository` (`order`) with DAL `Criteria` + associations (`lineItems`, `deliveries`, `transactions`, `addresses`, `tags`). |
+| `GET /v1/orders` | `EntityRepository` search with `Criteria` filter, sort, and keyset cursor. |
+| `PATCH /v1/orders/{id}` | `EntityRepository::update()` — limited to safe mutable fields (`customFields`, `tags`, `customerComment`, addresses), atomic single-call. |
+| `PUT /v1/orders/{id}/status` | `StateMachineRegistry::transition()` on `order.state` — plugin maps domain status to the Shopware transition action. |
+| `PUT /v1/orders/{id}/payment-status` | `StateMachineRegistry::transition()` on `order_transaction.state`. |
+| `PUT /v1/orders/{id}/delivery-status` | `StateMachineRegistry::transition()` on `order_delivery.state`. |
+| `DELETE /v1/orders/{id}` (soft) | `StateMachineRegistry::transition()` to `cancelled`. Re-cancel is idempotent (204); transition to a non-cancellable state yields 409. |
+| `DELETE /v1/orders/{id}?hard=true` | `EntityRepository::delete()` — Shopware blocks deletion for orders with completed payments; surfaced as 409 Conflict. |
+| `GET /v1/orders/{id}/events` | Not yet implemented. Concept: `EntityRepository` search on `state_machine_history` filtered by `entityId`. |
 
 ---
 
@@ -418,12 +424,14 @@ It is technically possible. It would be a mistake:
 
 ---
 
-## 9. Open questions for the implementation team
+## 9. Implementation decisions (resolved)
 
-1. Order *creation* via Admin API in Shopware 6 requires you to supply a fully calculated order. Confirm whether the use case is "we already have a calculated cart" or "we want Shopware to price it". If the latter, the facade must orchestrate Store API calls server-side (Sales Channel access key + service customer or guest), which is a different shape and worth a spike.
-2. Are external partners in scope, or only internal services? mTLS issuance to externals needs a CA/operations plan.
-3. Multi-sales-channel: does the same logical order id ever appear in multiple sales channels? Affects uniqueness assumptions in the facade.
-4. SLA targets — drives infra sizing and whether async/eventual flows are acceptable.
+These questions were open during architecture; all are resolved by the plugin implementation:
+
+1. **Order creation path.** Shopware prices the order. The plugin uses `CartService` + `OrderConverter` + `OrderPersister` in-process — callers supply domain input (line items, addresses, customer), Shopware applies all pricing, tax, promotion, and event logic. See `docs/spike-order-creation.md` for the full analysis.
+2. **External partners.** Currently internal/iPaaS only. Phase-1 auth is Shopware OAuth 2.0 (client credentials grant via a dedicated Integration). Phase-5 target auth (mTLS + scoped OAuth 2.0 + API key) remains open — see `docs/grooming-overview.md` §5b.
+3. **Multi-sales-channel.** Each order belongs to exactly one sales channel. The `salesChannelId` is passed on creation and stored on the order — no cross-channel collision.
+4. **SLA targets.** Sync path is the baseline (Phase 1). CQRS async writes + read projection (T13) are built and benchmarked (`docs/benchmark.md`); eventual-consistency cost is acceptable for the integration use case (ERP iPaaS, not direct checkout).
 
 ---
 

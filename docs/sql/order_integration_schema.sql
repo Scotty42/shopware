@@ -1,6 +1,7 @@
 -- CQRS read projection + write queue schema (PostgreSQL).
--- Applied automatically by docker-compose.cqrs.yml on first start, or run
--- manually:  psql "$ORDER_INTEGRATION_DB_DSN" -f docs/sql/order_integration_schema.sql
+-- Apply manually against the order-integration-db container:
+--   psql "$ORDER_INTEGRATION_DB_DSN" -f docs/sql/order_integration_schema.sql
+-- See docs/infrastructure-setup.md for full LXC provisioning steps.
 
 CREATE TABLE IF NOT EXISTS order_read_projection (
     id               TEXT PRIMARY KEY,
