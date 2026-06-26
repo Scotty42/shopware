@@ -27,7 +27,7 @@ jobs:
           path: plugin-src
 
       - name: Setup Shopware
-        uses: shopware/setup-shopware@v1
+        uses: shopware/setup-shopware@v2
         with:
           shopware-version: v6.6.10.19
           php-version: '8.3'
