@@ -115,8 +115,6 @@ jobs:
 
       - name: Apply DDL
         run: psql "postgresql://order_integration:ci_secret@localhost:5432/order_integration" -f docs/sql/order_integration_schema.sql
-        env:
-          PGPASSWORD: ci_secret
 
       - name: Run PDO integration tests
         run: vendor/bin/phpunit --testsuite=PdoIntegration

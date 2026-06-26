@@ -90,11 +90,16 @@ class PdoReadProjectionTest extends TestCase
 
         self::assertCount(3, $result['items']);
         self::assertNull($result['nextCursor']);
+
+        $ids = array_column($result['items'], 'id');
+        self::assertContains('ord-4a', $ids);
+        self::assertContains('ord-4b', $ids);
+        self::assertContains('ord-4c', $ids);
     }
 
     public function testListCursorPagination(): void
     {
-        // Insert 5 records with distinct createdAt values (1 second apart) so
+        // Insert 5 records with distinct createdAt values (1 day apart) so
         // cursor-based ordering (created_at DESC, id DESC) is deterministic.
         for ($i = 1; $i <= 5; $i++) {
             $ts = sprintf('2024-01-%02dT00:00:00+00:00', $i);
