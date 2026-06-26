@@ -47,25 +47,16 @@ jobs:
           php bin/console plugin:refresh
           php bin/console plugin:install --activate OrderIntegration
           php bin/console cache:clear
-
-      - name: Diagnose install state
-        run: |
-          echo "=== MySQL connection ==="
-          mysql -u root -h 127.0.0.1 -e "SELECT 'ok'" 2>&1 || echo "FAILED (exit $?)"
-          echo "=== sales_channel rows ==="
-          mysql -u root -h 127.0.0.1 shopware --batch -e "SELECT id, name, type_id FROM sales_channel" 2>&1 || echo "FAILED"
-          echo "=== tax rows ==="
-          mysql -u root -h 127.0.0.1 shopware --batch -e "SELECT COUNT(*) FROM tax" 2>&1 || echo "FAILED"
-          echo "=== currency rows ==="
-          mysql -u root -h 127.0.0.1 shopware --batch -e "SELECT iso_code FROM currency" 2>&1 || echo "FAILED"
-          echo "=== admin user ==="
-          mysql -u root -h 127.0.0.1 shopware --batch -e "SELECT username, admin FROM user" 2>&1 || echo "FAILED"
-          echo "=== OAuth token test ==="
-          curl -sv -X POST "$SHOPWARE_URL/api/oauth/token" \
-            -H 'Content-Type: application/json' \
-            -d '{"grant_type":"password","client_id":"administration","username":"admin","password":"shopware","scopes":"write"}' \
-            2>&1 | tail -30
-        continue-on-error: true
+          # install-storefront:false skips sales-channel:create:storefront in basic-setup;
+          # create one explicitly if the table is still empty.
+          SC_COUNT=$(mysql -u root -h 127.0.0.1 shopware --batch --skip-column-names \
+            -e 'SELECT COUNT(*) FROM sales_channel')
+          if [ "$SC_COUNT" = "0" ]; then
+            php bin/console sales-channel:create:storefront \
+              --name="E2E" \
+              --url="${APP_URL:-http://localhost:8000}" \
+              --isoCode=en-GB
+          fi
 
       - name: Seed test data
         run: |
@@ -76,6 +67,7 @@ jobs:
           hex2uuid() { local h=$1; echo "${h:0:8}-${h:8:4}-${h:12:4}-${h:16:4}-${h:20:12}"; }
 
           SC_HEX=$(db "SELECT LOWER(HEX(id)) FROM sales_channel LIMIT 1")
+          [ -n "$SC_HEX" ] || { echo "FATAL: sales_channel table is empty"; exit 1; }
           SC_ID=$(hex2uuid "$SC_HEX")
           SC_KEY=$(db "SELECT access_key FROM sales_channel LIMIT 1")
 
@@ -85,6 +77,8 @@ jobs:
           CURRENCY_HEX=$(db "SELECT LOWER(HEX(id)) FROM currency WHERE iso_code='EUR' LIMIT 1")
           CURRENCY_ID=$(hex2uuid "$CURRENCY_HEX")
 
+          echo "SC_ID=$SC_ID  TAX_ID=$TAX_ID  CURRENCY_ID=$CURRENCY_ID"
+
           # Admin token (needed for product creation)
           TOKEN=$(curl -sf -X POST "$SHOPWARE_URL/api/oauth/token" \
             -H 'Content-Type: application/json' \
@@ -93,7 +87,7 @@ jobs:
 
           # Create test product via Admin API
           PROD_ID=$(python3 -c "import uuid; print(str(uuid.uuid4()).replace('-',''))")
-          curl -sf -X POST "$SHOPWARE_URL/api/product" \
+          HTTP_CODE=$(curl -s -o /tmp/prod_resp.json -w "%{http_code}" -X POST "$SHOPWARE_URL/api/product" \
             -H "Authorization: Bearer $TOKEN" \
             -H 'Content-Type: application/json' \
             -d "{
@@ -105,7 +99,12 @@ jobs:
               \"taxId\": \"$TAX_ID\",
               \"visibilities\": [{\"salesChannelId\": \"$SC_ID\", \"visibility\": 30}],
               \"active\": true
-            }" > /dev/null
+            }")
+          if [[ "$HTTP_CODE" -ge 300 ]]; then
+            echo "ERROR: product creation returned HTTP $HTTP_CODE"
+            cat /tmp/prod_resp.json
+            exit 1
+          fi
 
           # Write .env.test before create_test_order.sh (which sources it)
           printf 'SHOPWARE_URL=%s\nSHOPWARE_ADMIN_USER=%s\nSHOPWARE_ADMIN_PASSWORD=%s\nSHOPWARE_STORE_ACCESS_KEY=%s\nSHOPWARE_SALES_CHANNEL_ID=%s\nSHOPWARE_TEST_PRODUCT_ID=%s\nSHOPWARE_STOREFRONT_URL=%s\n' \
