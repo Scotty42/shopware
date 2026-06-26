@@ -109,7 +109,10 @@ class DeliveryController extends AbstractController
         return new JsonResponse(
             $this->mapDelivery($delivery),
             Response::HTTP_CREATED,
-            ['ETag' => $this->deliveryEtagFor($delivery)]
+            [
+                'Location' => sprintf('/api/order-integration/v1/orders/%s/deliveries/%s', $orderId, $deliveryId),
+                'ETag'     => $this->deliveryEtagFor($delivery),
+            ]
         );
     }
 

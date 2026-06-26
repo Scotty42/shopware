@@ -523,6 +523,8 @@ class DeliveryControllerTest extends TestCase
         $response = $controller->create(self::ORDER_ID, $request, $this->context());
 
         self::assertSame(201, $response->getStatusCode());
+        self::assertNotNull($response->headers->get('Location'));
+        self::assertStringContainsString('/deliveries/', $response->headers->get('Location'));
     }
 
     public function testCreateHappyPathResponseHasEtagHeader(): void
@@ -544,6 +546,7 @@ class DeliveryControllerTest extends TestCase
         $response = $controller->create(self::ORDER_ID, $request, $this->context());
 
         self::assertNotEmpty($response->headers->get('ETag'));
+        self::assertNotNull($response->headers->get('Location'));
     }
 
     public function testCreateHappyPathWithShippingAddressResolvesCountryAndReturns201(): void
@@ -602,6 +605,38 @@ class DeliveryControllerTest extends TestCase
         self::assertSame(self::DELIVERY_ID, $body['id']);
     }
 
+    public function testCreateMissingSalutationThrowsRuntimeException(): void
+    {
+        $order = $this->makeOrderEntity();
+        $delivery = $this->makeDeliveryEntity();
+        $country = $this->makeCountryEntity(iso: 'DE');
+
+        $controller = $this->makeController(
+            orderRepo: $this->makeOrderRepo($order),
+            deliveryRepo: $this->makeDeliveryRepoForCreate($delivery),
+            addressRepo: $this->createStub(EntityRepository::class),
+            initialStateLoader: $this->makeInitialStateLoader(),
+            countryRepo: $this->makeCountryRepo($country),
+            salutationRepo: $this->makeSalutationRepo(null), // not_specified salutation absent
+        );
+
+        $body = json_encode([
+            'shippingAddress' => [
+                'firstName'   => 'Jane',
+                'lastName'    => 'Doe',
+                'street'      => 'Main St 1',
+                'zipcode'     => '12345',
+                'city'        => 'Berlin',
+                'countryCode' => 'DE',
+            ],
+        ]);
+
+        $request = $this->makeRequest('POST', $body);
+
+        $this->expectException(\RuntimeException::class);
+        $controller->create(self::ORDER_ID, $request, $this->context());
+    }
+
     // ── patch() ───────────────────────────────────────────────────────────────
 
     public function testPatchOrderNotFoundThrows(): void
@@ -651,7 +686,6 @@ class DeliveryControllerTest extends TestCase
     {
         $order = $this->makeOrderEntity();
         $delivery = $this->makeDeliveryEntity();
-        $currentEtag = $this->etagFor($delivery);
 
         $controller = $this->makeController(
             orderRepo: $this->makeOrderRepo($order),
