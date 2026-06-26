@@ -109,7 +109,8 @@ jobs:
             "$SC_KEY" "$SC_HEX" "$PROD_ID" "$SHOPWARE_URL" \
             > $GITHUB_WORKSPACE/plugin-src/.env.test
 
-          # Seed one order via create_test_order.sh
+          # Seed two orders so GET /orders?limit=1 returns a nextCursor for the pagination test
+          bash $GITHUB_WORKSPACE/plugin-src/tests/create_test_order.sh
           bash $GITHUB_WORKSPACE/plugin-src/tests/create_test_order.sh
 
       - name: Run HTTP integration tests
