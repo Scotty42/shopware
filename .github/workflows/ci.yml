@@ -70,3 +70,58 @@ jobs:
           fail_ci_if_error: false
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  pdo-integration:
+    name: PDO Integration (PostgreSQL 17)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: order_integration
+          POSTGRES_USER: order_integration
+          POSTGRES_PASSWORD: ci_secret
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP 8.3
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: composer:v2
+          extensions: pdo_pgsql
+
+      - name: Get Composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: composer-8.3-${{ hashFiles('composer.json') }}
+          restore-keys: |
+            composer-8.3-
+
+      - name: Install dependencies
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      - name: Apply DDL
+        run: psql "postgresql://order_integration:ci_secret@localhost:5432/order_integration" -f docs/sql/order_integration_schema.sql
+        env:
+          PGPASSWORD: ci_secret
+
+      - name: Run PDO integration tests
+        run: vendor/bin/phpunit --testsuite=PdoIntegration
+        env:
+          ORDER_INTEGRATION_DB_DSN: 'pgsql:host=localhost;port=5432;dbname=order_integration'
+          ORDER_INTEGRATION_DB_USER: order_integration
+          ORDER_INTEGRATION_DB_PASSWORD: ci_secret
+          XDEBUG_MODE: 'off'
