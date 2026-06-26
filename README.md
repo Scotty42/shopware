@@ -15,7 +15,7 @@ Shopware 6 ships three HTTP API surfaces:
 |---|---|---|---|
 | **Store API** | Storefront: catalog, cart, checkout, customer account | `sw-access-key` header (sales channel key) + `sw-context-token` session | For headless frontends and end users |
 | **Admin API** | Full CRUD over all entities, state machine transitions | OAuth 2.0 — client credentials (recommended) or password grant (dev only) | 6.7: scope parameter changed to space-delimited string |
-| **Sync API** (`POST /api/_action/sync`) | Bulk upsert/delete across any entity in one request | Same OAuth 2.0 as Admin API | Errors returned in response body, not HTTP status codes |
+| **Sync API** (`POST /api/_action/sync`) | Bulk create-or-update and delete across any entity in one request | Same OAuth 2.0 as Admin API | Errors returned in response body, not HTTP status codes |
 
 None of these is the right production traffic plane for a D2C ERP/OMS integration at order volume:
 
@@ -79,18 +79,21 @@ No breaking changes were identified between 6.6.10 and 6.7.x for the services us
 
 ![Shopware Admin — Order status transitions applied via API](docs/assets/Order_State.png)
 
-> **Request requirements on mutations (since backlog T2/T3).** Every mutating
-> order endpoint (`POST`/`PUT`/`PATCH`/`DELETE` on `/orders` and the status
-> sub-routes) requires an **`Idempotency-Key`** header — missing → `400`
-> (`order.idempotency_key_required`), replay of the same key+body returns the
-> original response, same key + different body → `409`
-> (`order.idempotency_key_reused`). `PUT`/`PATCH`/`DELETE` additionally require
-> an **`If-Match`** header carrying the current `ETag` — missing → `428`
-> (`order.precondition_required`), stale → `412` (`order.precondition_failed`).
-> `POST /orders` needs only `Idempotency-Key` (no resource to match yet).
-> Delivery mutations (`PATCH /deliveries/{did}`, `PUT /deliveries/{did}/status`)
-> also require `If-Match` — the delivery `ETag` is returned by `GET /deliveries/{did}`,
-> `POST /deliveries`, and every mutating response.
+### Mutation requirements
+
+Every mutating endpoint (`POST`/`PUT`/`PATCH`/`DELETE`) requires an **`Idempotency-Key`** header:
+
+- Missing → `400` (`order.idempotency_key_required`)
+- Same key + same body → original response replayed
+- Same key + different body → `409` (`order.idempotency_key_reused`)
+
+`PUT`/`PATCH`/`DELETE` additionally require an **`If-Match`** header with the current `ETag`:
+
+- Missing → `428` (`order.precondition_required`)
+- Stale ETag → `412` (`order.precondition_failed`)
+- `POST /orders` is exempt — no existing resource to match
+
+Delivery mutations (`PATCH /deliveries/{did}`, `PUT /deliveries/{did}/status`) also require `If-Match`. The delivery `ETag` is returned by `GET /deliveries/{did}`, `POST /deliveries`, and every mutating delivery response.
 
 ### Orders
 
@@ -120,16 +123,19 @@ No breaking changes were identified between 6.6.10 and 6.7.x for the services us
 | `PATCH` | `/api/order-integration/v1/orders/{id}/deliveries/{did}` | Update tracking codes, shipping method — **requires `If-Match`** |
 | `PUT` | `/api/order-integration/v1/orders/{id}/deliveries/{did}/status` | Delivery state transition — **requires `If-Match`** |
 
-### ERP pull-sync (T12)
+### ERP pull-sync
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/api/order-integration/v1/erp/orders` | Pull queue — orders not yet acknowledged by the ERP (optional `?status=`), FIFO, cursor-paginated |
-| `POST` | `/api/order-integration/v1/erp/orders/acknowledge` | Mark a batch (1–500) of orders as forwarded to the ERP; sets `customFields.erpSyncedAt` (idempotent) |
+| `POST` | `/api/order-integration/v1/erp/orders/acknowledge` | Mark a batch (1–500) of orders as forwarded to the ERP (idempotent) |
 
-The "known to ERP" flag lives in `order.customFields.erpSyncedAt` (ISO
-timestamp) — no migration, filterable via the DAL. See
-`docs/erp-pull-sync-concept.md`.
+The acknowledge endpoint writes two optional custom fields per order:
+
+- `customFields.erpSyncedAt` — ISO 8601 timestamp of acknowledgement (always set)
+- `customFields.erpOrderId` — your ERP's own order ID (optional; pass an `erpOrderIds` map `{ "<shopwareId>": "<erpId>" }` in the request body)
+
+Both fields are no-migration, filterable via the DAL. See [docs/erp-pull-sync-concept.md](docs/erp-pull-sync-concept.md) for the full design and request/response shapes.
 
 ### GET /orders — query parameters
 
@@ -137,9 +143,9 @@ timestamp) — no migration, filterable via the DAL. See
 |---|---|---|---|
 | `limit` | int | 50 | 1–200 |
 | `status` | string | — | `open`, `in_progress`, `completed`, `cancelled` |
-| `sort` | string | `createdAt:desc` | `(createdAt\|updatedAt\|orderNumber):(asc\|desc)` (T4) |
-| `customerId` | string | — | 32-char hex **or** canonical UUID, normalized server-side (T6) |
-| `salesChannelId` | string | — | 32-char hex (T5) |
+| `sort` | string | `createdAt:desc` | `(createdAt\|updatedAt\|orderNumber):(asc\|desc)` |
+| `customerId` | string | — | 32-char hex **or** canonical UUID, normalized server-side |
+| `salesChannelId` | string | — | 32-char hex |
 | `createdAfter` | ISO 8601 | — | valid date-time |
 | `createdBefore` | ISO 8601 | — | valid date-time |
 | `cursor` | string | — | base64-encoded keyset cursor |
@@ -159,9 +165,7 @@ Every order response returns the spec-compliant `Order` payload from `docs/order
 
 All errors use RFC 9457 `application/problem+json` with `type`, `title`, `status`, `detail`, `code`. Validation errors include an `errors[]` array with JSON Pointer references.
 
-Codes added by the cross-cutting backlog items: `400 order.idempotency_key_required`,
-`409 order.idempotency_key_reused` (T2), `428 order.precondition_required`,
-`412 order.precondition_failed` (T3).
+Mutation-specific codes: `400 order.idempotency_key_required`, `409 order.idempotency_key_reused`, `428 order.precondition_required`, `412 order.precondition_failed`.
 
 ---
 
@@ -175,7 +179,7 @@ Codes added by the cross-cutting backlog items: `400 order.idempotency_key_requi
 | MariaDB | 10.11 | Default in Trixie |
 | Shopware | 6.6.x or 6.7.x | Installed at `/var/www/shopware` |
 | Composer | 2.x | For plugin dependency declaration |
-| PostgreSQL | 17 | CQRS read projection + write-queue DB — own LXC (`order-integration-db`), Trixie default. Only required when async writes / projection reads are enabled (T13). See `docs/infrastructure-setup.md`. |
+| PostgreSQL | 17 | CQRS read projection + write-queue DB — own LXC (`order-integration-db`), Trixie default. Only required when async writes / projection reads are enabled. See [docs/infrastructure-setup.md](docs/infrastructure-setup.md). |
 
 ---
 
@@ -312,7 +316,6 @@ vendor/bin/phpunit            # full unit suite
 composer test:unit            # alias
 ```
 
-See [docs/testing.md](docs/testing.md) for the full layer breakdown.
 
 **PDO integration tests** — require a running PostgreSQL instance:
 
@@ -358,11 +361,6 @@ rm -rf /var/www/shopware/var/cache/*
 For production traffic with **parallel writes**, the plugin can run the
 load-aware variant (Option C in `docs/order-api-concept.md` §2): a denormalized
 **read projection** and a durable **write queue** with a bounded worker pool.
-
-> **Status:** built and merged (T13), **off by default**. Activated and
-> A/B-benchmarked on the BE — see the measured sync-vs-async results in
-> `docs/benchmark.md`. Setup (Postgres LXC, schema, env, templated workers) is in
-> `docs/infrastructure-setup.md`.
 
 - **Write queue** — `POST /v1/orders` is durably accepted and answered with
   `202 Accepted` + a job URL; a worker pool (`bin/console
@@ -410,9 +408,7 @@ license** from the author. Contact: Dr.-Ing. Markus Friedrich
 - [docs/order-api-concept.md](docs/order-api-concept.md) — full architecture analysis, Options A/B/C, ERP integration design, security model
 - [docs/order-api-openapi.yaml](docs/order-api-openapi.yaml) — OpenAPI 3.1 spec for the full target API surface
 - [docs/spike-order-creation.md](docs/spike-order-creation.md) — analysis of four order-creation paths in Shopware 6
-- [docs/erp-pull-sync-concept.md](docs/erp-pull-sync-concept.md) — ERP pull queue + acknowledge flag design (T12)
-- [docs/testing.md](docs/testing.md) — unit vs. integration test layers and the CI gap
-- [docs/BACKLOG.md](docs/BACKLOG.md) — the hardening backlog (T1–T11) with per-task rationale
+- [docs/erp-pull-sync-concept.md](docs/erp-pull-sync-concept.md) — ERP pull queue + acknowledge design (request/response shapes, custom fields, idempotency)
 - [docs/benchmark.md](docs/benchmark.md) — A/B load benchmark tool + observed sync-vs-async results
 - [docs/release.md](docs/release.md) — versioning, tagging, and the packaging/release workflow
 - [docs/cqrs-write-queue-concept.md](docs/cqrs-write-queue-concept.md) — CQRS read projection + write-queue design (Option C / T13)
