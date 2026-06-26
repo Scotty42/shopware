@@ -9,6 +9,7 @@ use Scotty42\OrderIntegration\Cqrs\PdoConnectionProvider;
 use Scotty42\OrderIntegration\Cqrs\Read\InMemoryReadProjection;
 use Scotty42\OrderIntegration\Cqrs\Write\BackpressurePolicy;
 use Scotty42\OrderIntegration\Cqrs\Write\InMemoryWriteQueue;
+use Scotty42\OrderIntegration\Exception\IdempotencyConflictException;
 use Scotty42\OrderIntegration\Exception\InvalidTransitionException;
 use Scotty42\OrderIntegration\Exception\MissingIdempotencyKeyException;
 use Scotty42\OrderIntegration\Exception\OrderNotFoundException;
@@ -49,7 +50,6 @@ class OrderControllerTest extends TestCase
 
     /** Env vars touched by makeCqrs() — wiped in tearDown to prevent pollution. */
     private const CQRS_ENV_VARS = [
-        'ORDER_INTEGRATION_DB_DSN',
         'ORDER_INTEGRATION_ASYNC_WRITES',
         'ORDER_INTEGRATION_PROJECTION_READS',
     ];
@@ -78,7 +78,8 @@ class OrderControllerTest extends TestCase
     /**
      * Construct a real CqrsGateway with InMemory* implementations so we don't
      * have to mock a final class. Flags are injected via $_SERVER (read at
-     * construction time by CqrsGateway). A non-null DSN makes dbConfigured=true.
+     * construction time by CqrsGateway). dbConfigured=true is set by passing
+     * a non-null DSN directly to PdoConnectionProvider — not via an env var.
      */
     private function makeCqrs(
         bool $projectionReads = false,
@@ -87,9 +88,6 @@ class OrderControllerTest extends TestCase
         ?InMemoryReadProjection $projection = null,
         ?InMemoryWriteQueue $queue = null,
     ): CqrsGateway {
-        // A non-null DSN is required for dbConfigured=true (enables the flags).
-        // We use a sentinel string — no actual DB connection is made here.
-        $_SERVER['ORDER_INTEGRATION_DB_DSN'] = 'sqlite::memory:';
         $_SERVER['ORDER_INTEGRATION_ASYNC_WRITES']     = $asyncWrites     ? 'true' : 'false';
         $_SERVER['ORDER_INTEGRATION_PROJECTION_READS'] = $projectionReads ? 'true' : 'false';
 
@@ -317,7 +315,7 @@ class OrderControllerTest extends TestCase
         $response = $controller->list($this->makeRequest('GET', '', ['limit' => '500']), $this->context());
 
         $body = json_decode($response->getContent(), true);
-        self::assertSame(200, $body['page']['limit']);
+        self::assertSame(200, $body['page']['limit']); // 200 is the max page size, not an HTTP status code
     }
 
     public function testListCqrsProjectionPathReturns200WithItemsAndPage(): void
@@ -514,7 +512,7 @@ class OrderControllerTest extends TestCase
 
     public function testCreateAsyncWritePathReturns202WithLocationHeader(): void
     {
-        // Use Prefer: respond-async to force async path regardless of env flag
+        // asyncWrites: true in the env flag routes to the async path
         $queue = new InMemoryWriteQueue();
         $cqrs = $this->makeCqrs(asyncWrites: true, shouldShed: false, queue: $queue);
 
@@ -523,7 +521,7 @@ class OrderControllerTest extends TestCase
             idempotency: new IdempotencyService(new InMemoryIdempotencyStore()),
         );
 
-        $request = $this->makeRequest('POST', $this->validCreateBody(), [], 'idem-key-async-001', prefer: 'respond-async');
+        $request = $this->makeRequest('POST', $this->validCreateBody(), [], 'idem-key-async-001');
 
         $response = $controller->create($request, $this->context());
 
@@ -544,7 +542,7 @@ class OrderControllerTest extends TestCase
             idempotency: new IdempotencyService(new InMemoryIdempotencyStore()),
         );
 
-        $request = $this->makeRequest('POST', $this->validCreateBody(), [], 'idem-key-async-002', prefer: 'respond-async');
+        $request = $this->makeRequest('POST', $this->validCreateBody(), [], 'idem-key-async-002');
 
         $response = $controller->create($request, $this->context());
 
@@ -565,7 +563,7 @@ class OrderControllerTest extends TestCase
         $response = $controller->create($request, $this->context());
 
         self::assertSame(503, $response->getStatusCode());
-        self::assertNotNull($response->headers->get('Retry-After'));
+        self::assertSame('0', $response->headers->get('Retry-After'));
     }
 
     public function testCreateShedPathResponseBodyContainsBackpressureCode(): void
@@ -680,6 +678,30 @@ class OrderControllerTest extends TestCase
         self::assertSame(201, $response->getStatusCode());
         $responseBody = json_decode($response->getContent(), true);
         self::assertSame('cached-order', $responseBody['id']);
+    }
+
+    public function testCreateIdempotencyConflictThrowsConflictException(): void
+    {
+        $store = new InMemoryIdempotencyStore();
+        $idempotency = new IdempotencyService($store);
+
+        // Pre-seed the store with a record whose body hash does NOT match the body we'll send.
+        $idemKey = 'idem-conflict-001';
+        $idempotency->complete($idemKey, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 201, '{"id":"old-order"}', []);
+
+        $creationService = $this->createMock(OrderCreationService::class);
+        $creationService->expects(self::never())->method('createOrder');
+
+        $controller = $this->makeDefaultController(
+            creationService: $creationService,
+            idempotency: $idempotency,
+        );
+
+        // Send a different body — its SHA-256 will not match the stored fake hash.
+        $request = $this->makeRequest('POST', $this->validCreateBody(), [], $idemKey);
+
+        $this->expectException(IdempotencyConflictException::class);
+        $controller->create($request, $this->context());
     }
 
     // ── patch() ───────────────────────────────────────────────────────────────
