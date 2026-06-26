@@ -1,0 +1,125 @@
+name: E2E 6.6
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-66-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  http-integration:
+    name: HTTP Integration (Shopware 6.6)
+    runs-on: ubuntu-latest
+    env:
+      SHOPWARE_URL: http://localhost:8000
+      SHOPWARE_ADMIN_USER: admin
+      SHOPWARE_ADMIN_PASSWORD: shopware
+
+    steps:
+      - name: Checkout plugin
+        uses: actions/checkout@v4
+        with:
+          path: plugin-src
+
+      - name: Setup Shopware
+        uses: shopware/setup-shopware@v2
+        with:
+          shopware-version: v6.6.10.19
+          php-version: '8.3'
+          install: 'true'
+          install-locale: en-GB
+          install-currency: EUR
+          install-admin: 'false'
+          install-storefront: 'false'
+          mysql-version: builtin
+          path: shopware
+
+      - name: Install plugin
+        working-directory: shopware
+        run: |
+          mkdir -p custom/plugins
+          cp -r $GITHUB_WORKSPACE/plugin-src custom/plugins/OrderIntegration
+          php bin/console plugin:refresh
+          php bin/console plugin:install --activate OrderIntegration
+          php bin/console cache:clear
+          # install-storefront:false skips sales-channel:create:storefront in basic-setup;
+          # create one explicitly if the table is still empty.
+          SC_COUNT=$(mysql -u root -h 127.0.0.1 shopware --batch --skip-column-names \
+            -e 'SELECT COUNT(*) FROM sales_channel')
+          if [ "$SC_COUNT" = "0" ]; then
+            php bin/console sales-channel:create:storefront \
+              --name="E2E" \
+              --url="${APP_URL:-http://localhost:8000}" \
+              --isoCode=en-GB
+          fi
+
+      - name: Seed test data
+        run: |
+          # Read Sales Channel, Tax, Currency from MySQL.
+          # LOWER(HEX(id)) yields 32-char hex (no dashes). Shopware's DAL
+          # validator accepts /^[0-9a-f]{32}$/ directly, but rejects the dashed
+          # form when the UUID is v7 (third nibble '7…') — which Shopware 6.6
+          # uses for new entities. Use raw hex throughout.
+          db() { mysql -u root -h 127.0.0.1 shopware --batch --skip-column-names -e "$1"; }
+
+          SC_HEX=$(db "SELECT LOWER(HEX(id)) FROM sales_channel LIMIT 1")
+          [ -n "$SC_HEX" ] || { echo "FATAL: sales_channel table is empty"; exit 1; }
+          SC_KEY=$(db "SELECT access_key FROM sales_channel LIMIT 1")
+
+          TAX_HEX=$(db "SELECT LOWER(HEX(id)) FROM tax LIMIT 1")
+          CURRENCY_HEX=$(db "SELECT LOWER(HEX(id)) FROM currency WHERE iso_code='EUR' LIMIT 1")
+
+          echo "SC=$SC_HEX  TAX=$TAX_HEX  CURRENCY=$CURRENCY_HEX"
+
+          # Admin token (needed for product creation)
+          TOKEN=$(curl -sf -X POST "$SHOPWARE_URL/api/oauth/token" \
+            -H 'Content-Type: application/json' \
+            -d "{\"grant_type\":\"password\",\"client_id\":\"administration\",\"username\":\"$SHOPWARE_ADMIN_USER\",\"password\":\"$SHOPWARE_ADMIN_PASSWORD\",\"scopes\":\"write\"}" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+          # Create test product via Admin API (32-char hex IDs accepted by Shopware DAL)
+          PROD_ID=$(python3 -c "import uuid; print(str(uuid.uuid4()).replace('-',''))")
+          HTTP_CODE=$(curl -s -o /tmp/prod_resp.json -w "%{http_code}" -X POST "$SHOPWARE_URL/api/product" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"id\": \"$PROD_ID\",
+              \"name\": \"CI Test Product\",
+              \"productNumber\": \"CI-TEST-001\",
+              \"stock\": 100,
+              \"price\": [{\"currencyId\": \"$CURRENCY_HEX\", \"gross\": 19.99, \"net\": 16.80, \"linked\": true}],
+              \"taxId\": \"$TAX_HEX\",
+              \"visibilities\": [{\"salesChannelId\": \"$SC_HEX\", \"visibility\": 30}],
+              \"active\": true
+            }")
+          if [[ "$HTTP_CODE" -ge 300 ]]; then
+            echo "ERROR: product creation returned HTTP $HTTP_CODE"
+            cat /tmp/prod_resp.json
+            exit 1
+          fi
+
+          # Write .env.test before create_test_order.sh (which sources it)
+          printf 'SHOPWARE_URL=%s\nSHOPWARE_ADMIN_USER=%s\nSHOPWARE_ADMIN_PASSWORD=%s\nSHOPWARE_STORE_ACCESS_KEY=%s\nSHOPWARE_SALES_CHANNEL_ID=%s\nSHOPWARE_TEST_PRODUCT_ID=%s\nSHOPWARE_STOREFRONT_URL=%s\n' \
+            "$SHOPWARE_URL" "$SHOPWARE_ADMIN_USER" "$SHOPWARE_ADMIN_PASSWORD" \
+            "$SC_KEY" "$SC_HEX" "$PROD_ID" "$SHOPWARE_URL" \
+            > $GITHUB_WORKSPACE/plugin-src/.env.test
+
+          # Seed two orders so GET /orders?limit=1 returns a nextCursor for the pagination test
+          bash $GITHUB_WORKSPACE/plugin-src/tests/create_test_order.sh
+          bash $GITHUB_WORKSPACE/plugin-src/tests/create_test_order.sh
+
+      - name: Run HTTP integration tests
+        run: bash $GITHUB_WORKSPACE/plugin-src/tests/api_test.sh
+
+      - name: Upload Shopware logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shopware-logs-6.6
+          path: shopware/var/log/
+          retention-days: 7
