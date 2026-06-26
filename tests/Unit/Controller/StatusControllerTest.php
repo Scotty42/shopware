@@ -142,6 +142,7 @@ class StatusControllerTest extends TestCase
     {
         $tx = $this->createMock(OrderTransactionEntity::class);
         $tx->method('getId')->willReturn($id);
+        $tx->method('getUniqueIdentifier')->willReturn($id);
 
         return $tx;
     }
@@ -150,6 +151,7 @@ class StatusControllerTest extends TestCase
     {
         $delivery = $this->createMock(OrderDeliveryEntity::class);
         $delivery->method('getId')->willReturn($id);
+        $delivery->method('getUniqueIdentifier')->willReturn($id);
 
         return $delivery;
     }
@@ -287,6 +289,8 @@ class StatusControllerTest extends TestCase
 
     public function testSetPaymentStatusMissingIfMatchThrows(): void
     {
+        // assertIfMatch fires before the empty-collection check, so PreconditionRequiredException (428)
+        // is thrown first regardless of collection state.
         $order = $this->makeOrderEntity(new OrderTransactionCollection());
         $controller = $this->makeController(
             $this->makeOrderRepo($order),
@@ -347,6 +351,8 @@ class StatusControllerTest extends TestCase
         $response = $controller->setPaymentStatus(self::ORDER_ID, $request, $this->context());
 
         self::assertSame(409, $response->getStatusCode());
+        $body = json_decode($response->getContent(), true);
+        self::assertSame('order.no_transactions', $body['code']);
     }
 
     public function testSetPaymentStatusMissingStatusFieldThrows(): void
@@ -418,6 +424,8 @@ class StatusControllerTest extends TestCase
 
     public function testSetDeliveryStatusMissingIfMatchThrows(): void
     {
+        // assertIfMatch fires before the empty-collection check, so PreconditionRequiredException (428)
+        // is thrown first regardless of collection state.
         $order = $this->makeOrderEntity(null, new OrderDeliveryCollection());
         $controller = $this->makeController(
             $this->makeOrderRepo($order),
@@ -478,6 +486,8 @@ class StatusControllerTest extends TestCase
         $response = $controller->setDeliveryStatus(self::ORDER_ID, $request, $this->context());
 
         self::assertSame(409, $response->getStatusCode());
+        $body = json_decode($response->getContent(), true);
+        self::assertSame('order.no_deliveries', $body['code']);
     }
 
     public function testSetDeliveryStatusMissingStatusFieldThrows(): void
@@ -548,6 +558,76 @@ class StatusControllerTest extends TestCase
         $request = $this->makeRequest('/order-status', ['status' => 'completed'], idempotencyKey: $key);
 
         $response = $controller->setOrderStatus(self::ORDER_ID, $request, $this->context());
+
+        self::assertSame(200, $response->getStatusCode());
+        $body = json_decode($response->getContent(), true);
+        self::assertSame('cached', $body['id']);
+    }
+
+    public function testSetPaymentStatusIdempotencyReplayReturnsCachedResponse(): void
+    {
+        $store = new InMemoryIdempotencyStore();
+        $idempotency = new IdempotencyService($store);
+
+        $key  = 'replay-payment-status-01';
+        $hash = $idempotency->hash('{"status":"paid"}');
+        $idempotency->complete($key, $hash, 200, '{"id":"cached"}', ['ETag' => 'W/"cached"']);
+
+        $lock = $this->createMock(SharedLockInterface::class);
+        $lock->method('acquire')->willReturn(true);
+        $lockFactory = $this->createMock(LockFactory::class);
+        $lockFactory->method('createLock')->willReturn($lock);
+
+        $stateMachine = $this->createMock(StateMachineService::class);
+        $stateMachine->expects(self::never())->method('transitionPayment');
+
+        $controller = new StatusController(
+            $this->makeOrderRepo(null), // would 404 if called
+            $stateMachine,
+            $this->makeOrderMapper(),
+            $idempotency,
+            new EtagComparator(),
+            $lockFactory,
+        );
+
+        $request = $this->makeRequest('/payment-status', ['status' => 'paid'], idempotencyKey: $key);
+
+        $response = $controller->setPaymentStatus(self::ORDER_ID, $request, $this->context());
+
+        self::assertSame(200, $response->getStatusCode());
+        $body = json_decode($response->getContent(), true);
+        self::assertSame('cached', $body['id']);
+    }
+
+    public function testSetDeliveryStatusIdempotencyReplayReturnsCachedResponse(): void
+    {
+        $store = new InMemoryIdempotencyStore();
+        $idempotency = new IdempotencyService($store);
+
+        $key  = 'replay-delivery-status-01';
+        $hash = $idempotency->hash('{"status":"shipped"}');
+        $idempotency->complete($key, $hash, 200, '{"id":"cached"}', ['ETag' => 'W/"cached"']);
+
+        $lock = $this->createMock(SharedLockInterface::class);
+        $lock->method('acquire')->willReturn(true);
+        $lockFactory = $this->createMock(LockFactory::class);
+        $lockFactory->method('createLock')->willReturn($lock);
+
+        $stateMachine = $this->createMock(StateMachineService::class);
+        $stateMachine->expects(self::never())->method('transitionDelivery');
+
+        $controller = new StatusController(
+            $this->makeOrderRepo(null), // would 404 if called
+            $stateMachine,
+            $this->makeOrderMapper(),
+            $idempotency,
+            new EtagComparator(),
+            $lockFactory,
+        );
+
+        $request = $this->makeRequest('/delivery-status', ['status' => 'shipped'], idempotencyKey: $key);
+
+        $response = $controller->setDeliveryStatus(self::ORDER_ID, $request, $this->context());
 
         self::assertSame(200, $response->getStatusCode());
         $body = json_decode($response->getContent(), true);
