@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: e2e-${{ github.ref }}
+  group: e2e-${{ github.ref }}-${{ matrix.sw.label }}
   cancel-in-progress: true
 
 permissions:
@@ -13,8 +13,14 @@ permissions:
 
 jobs:
   http-integration:
-    name: HTTP Integration (Shopware 6.6)
+    name: HTTP Integration (Shopware ${{ matrix.sw.label }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sw:
+          - { version: "v6.6.10.19", php: "8.3", label: "6.6" }
+          - { version: "v6.7.11.1",  php: "8.3", label: "6.7" }
     env:
       SHOPWARE_URL: http://localhost:8000
       SHOPWARE_ADMIN_USER: admin
@@ -29,8 +35,8 @@ jobs:
       - name: Setup Shopware
         uses: shopware/setup-shopware@v2
         with:
-          shopware-version: v6.6.10.19
-          php-version: '8.3'
+          shopware-version: ${{ matrix.sw.version }}
+          php-version: ${{ matrix.sw.php }}
           install: 'true'
           install-locale: en-GB
           install-currency: EUR
@@ -120,6 +126,6 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: shopware-logs
+          name: shopware-logs-${{ matrix.sw.label }}
           path: shopware/var/log/
           retention-days: 7
