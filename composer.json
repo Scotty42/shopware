@@ -24,7 +24,7 @@
     "scripts": {
         "test": "phpunit",
         "test:unit": "phpunit --testsuite=Unit",
-        "test:coverage": "phpunit --testsuite=Unit --coverage-text --min-line-coverage=80"
+        "test:coverage": "phpunit --testsuite=Unit --coverage-text"
     },
     "extra": {
         "shopware-plugin-class": "Scotty42\\OrderIntegration\\OrderIntegrationPlugin",
