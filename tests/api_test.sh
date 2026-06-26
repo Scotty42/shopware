@@ -39,7 +39,7 @@ idem() { python3 -c "import uuid;print(uuid.uuid4())"; }            # fresh Idem
 TOKEN=$(curl -sf -X POST "$SHOPWARE_URL/api/oauth/token" \
   -H 'Content-Type: application/json' \
   "${CF_ARGS[@]}" \
-  -d "{\"grant_type\":\"password\",\"client_id\":\"administration\",\"username\":\"$SHOPWARE_ADMIN_USER\",\"password\":\"$SHOPWARE_ADMIN_PASSWORD\",\"scopes\":\"write\"}" \
+  -d "{\"grant_type\":\"password\",\"client_id\":\"administration\",\"username\":\"$SHOPWARE_ADMIN_USER\",\"password\":\"$SHOPWARE_ADMIN_PASSWORD\",\"scope\":\"write\",\"scopes\":\"write\"}" \
   | jqpy "d['access_token']")
 
 if [[ -z "$TOKEN" ]]; then
