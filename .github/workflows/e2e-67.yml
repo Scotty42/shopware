@@ -79,7 +79,7 @@ jobs:
           # Admin token (needed for product creation)
           TOKEN=$(curl -sf -X POST "$SHOPWARE_URL/api/oauth/token" \
             -H 'Content-Type: application/json' \
-            -d "{\"grant_type\":\"password\",\"client_id\":\"administration\",\"username\":\"$SHOPWARE_ADMIN_USER\",\"password\":\"$SHOPWARE_ADMIN_PASSWORD\",\"scopes\":\"write\"}" \
+            -d "{\"grant_type\":\"password\",\"client_id\":\"administration\",\"username\":\"$SHOPWARE_ADMIN_USER\",\"password\":\"$SHOPWARE_ADMIN_PASSWORD\",\"scope\":\"write\"}" \
             | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 
           # Create test product via Admin API (32-char hex IDs accepted by Shopware DAL)
