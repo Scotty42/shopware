@@ -1,24 +1,28 @@
 # Order Integration Plugin
 
+[![CI](https://github.com/Scotty42/shopware/actions/workflows/ci.yml/badge.svg)](https://github.com/Scotty42/shopware/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/Scotty42/shopware/branch/main/graph/badge.svg)](https://codecov.io/gh/Scotty42/shopware)
+
 Shopware 6 plugin that exposes a domain-shaped, service-to-service REST API for order management. Built as a Shopware-native plugin running inside the Shopware backend container, calling Shopware's internal PHP services directly — no HTTP hop to the Admin API.
 
 ---
 
 ## Context & motivation
 
-Shopware 6 ships two HTTP APIs:
+Shopware 6 ships three HTTP API surfaces:
 
-| API | Purpose | Auth | Suitable for |
+| API | Purpose | Auth | Notes |
 |---|---|---|---|
-| **Store API** | Storefront-facing: catalog, cart, checkout, customer account | Sales channel access key + `sw-context-token` | Headless frontends, end users |
-| **Admin API** | Full CRUD over all entities, state machine transitions | OAuth 2.0 (password grant / client credentials) | Back-office tools, low-volume integrations |
+| **Store API** | Storefront: catalog, cart, checkout, customer account | `sw-access-key` header (sales channel key) + `sw-context-token` session | For headless frontends and end users |
+| **Admin API** | Full CRUD over all entities, state machine transitions | OAuth 2.0 — client credentials (recommended) or password grant (dev only) | 6.7: scope parameter changed to space-delimited string |
+| **Sync API** (`POST /api/_action/sync`) | Bulk upsert/delete across any entity in one request | Same OAuth 2.0 as Admin API | Errors returned in response body, not HTTP status codes |
 
-Neither is the right production traffic plane for a D2C integration with an ERP or OMS:
+None of these is the right production traffic plane for a D2C ERP/OMS integration at order volume:
 
-- The **Admin API** runs on the same PHP-FPM pool as the storefront, goes through the full Shopware DAL stack on every call, and will saturate the shop under order-volume read traffic.
-- The **Store API** is designed for human-paced storefront traffic and is not appropriate for service-to-service integration load.
+- The **Admin API** and **Sync API** share the PHP-FPM pool with the storefront and go through the full Shopware DAL stack on every call — they saturate the shop under sustained order-volume traffic.
+- The **Store API** is designed for human-paced storefront interactions and is not appropriate for service-to-service load.
 
-The solution is a **Shopware plugin** that registers its own API routes and calls Shopware's internal PHP services (`EntityRepository`, `CartService`, `StateMachineRegistry`, `OrderConverter`) directly — in-process, no HTTP overhead, same DB transaction where needed.
+The solution is a **Shopware plugin** that registers its own routes and calls Shopware's internal PHP services (`EntityRepository`, `CartService`, `StateMachineRegistry`, `OrderConverter`) directly — in-process, no HTTP overhead, same DB transaction where needed. See [docs/order-api-concept.md](docs/order-api-concept.md) and [docs/spike-order-creation.md](docs/spike-order-creation.md) for the full design analysis.
 
 ---
 
@@ -68,54 +72,6 @@ public/staging URL (for example behind Cloudflare Access).
 | 6.8.x LTS | Planned migration target |
 
 No breaking changes were identified between 6.6.10 and 6.7.x for the services used by this plugin (`CartService`, `OrderPersister`, `OrderConverter`, `StateMachineRegistry`, `MultiFilter`).
-
----
-
-## API design decisions
-
-### Why a plugin instead of a standalone facade
-
-Four options were evaluated (see `docs/order-api-concept.md` and `docs/spike-order-creation.md`):
-
-| Option | Description | Decision |
-|---|---|---|
-| **A** | Callers hit the Shopware Admin API directly | Rejected — tight coupling, not suitable for D2C load |
-| **B** | Standalone facade service in front of the Admin API | Viable for low volume; first step toward Option C |
-| **C** | Standalone facade **+ read projection (CQRS) + write queue** (the load-aware variant in `docs/order-api-concept.md` §2) | Built **inside the plugin** in T13 (off by default, env-gated). The infra/load axis on top of Option D — see `docs/cqrs-write-queue-concept.md`. |
-| **D** | **Plugin inside Shopware** using internal services (this repo) | **Chosen for the endpoint layer** — lowest latency, no extra hop, uses Shopware's own pricing/checkout code |
-
-> **Note on naming.** Earlier revisions of this README labelled the plugin
-> "Option C", which collided with Option C in `docs/order-api-concept.md`
-> (the facade + CQRS + queue variant). They are different things: the plugin
-> (Option **D**) is the *endpoint* implementation; concept Option **C** is the
-> *infra/load* evolution. The two are orthogonal axes and can coexist.
-
-### Route namespace
-
-Shopware reserves `/api/integration/...` for its own integration entity. The plugin uses `/api/order-integration/v1/...` to avoid collision.
-
-### Authentication
-
-Phase 1 uses **Shopware OAuth 2.0** at `/api/oauth/token` (the `shopwareOAuth2` security scheme in `docs/order-api-openapi.yaml`). Two grant types are supported:
-
-**1. Password Grant (development/admin use)**
-```bash
-curl -X POST /api/oauth/token \
-  -d '{"grant_type":"password","client_id":"administration","username":"admin","password":"...","scopes":"write"}'
-```
-
-**2. Client Credentials Grant (service-to-service, recommended)**
-
-A dedicated Shopware Integration user is created with limited scope (`admin: false`). Services authenticate with their `accessKey` and `secretAccessKey`:
-
-```bash
-curl -X POST /api/oauth/token \
-  -d '{"grant_type":"client_credentials","client_id":"<SHOPWARE_INTEGRATION_ACCESS_KEY>","client_secret":"<SHOPWARE_INTEGRATION_SECRET>"}'
-```
-
-Plugin routes are registered in the `api` route scope — Shopware validates the Bearer token on every request. No valid token → `401 Unauthorized`.
-
-Phase 5 introduces the dedicated mTLS + OAuth 2.0 client-credentials + API-key set documented in the OpenAPI spec; that auth path runs behind an API gateway and is not implemented in Phase 1.
 
 ---
 
@@ -346,9 +302,9 @@ variables entirely — the scripts detect their absence and skip the headers.
 
 ### Run tests
 
-Two suites cover different layers:
+Three suites cover different layers:
 
-**Unit tests (PHPUnit)** — no Shopware kernel required, runs in CI:
+**Unit tests (PHPUnit)** — no Shopware kernel required, 289 tests, runs in CI:
 
 ```bash
 composer install
@@ -356,11 +312,21 @@ vendor/bin/phpunit            # full unit suite
 composer test:unit            # alias
 ```
 
-Coverage (pure-logic seams): `QueryValidator`, `StateMachineService`, `OrderMapper`,
-`IdempotencyService`, `EtagComparator`, `SoftDeletePolicy`, `OrderCreateValidator`,
-`ExceptionSubscriber`, `ErpSyncPolicy`. See `tests/Unit/` and `docs/testing.md` for the full layer breakdown.
+See [docs/testing.md](docs/testing.md) for the full layer breakdown.
 
-**Integration tests (Bash)** — requires a live Shopware backend with the plugin installed:
+**PDO integration tests** — require a running PostgreSQL instance:
+
+```bash
+export ORDER_INTEGRATION_DB_DSN="pgsql:host=localhost;dbname=order_integration;user=order_integration;password=..."
+export ORDER_INTEGRATION_DB_USER="order_integration"
+export ORDER_INTEGRATION_DB_PASSWORD="..."
+psql "$ORDER_INTEGRATION_DB_DSN" -f docs/sql/order_integration_schema.sql
+vendor/bin/phpunit --testsuite PdoIntegration
+```
+
+Without `ORDER_INTEGRATION_DB_DSN`, PDO integration tests are automatically skipped. See [docs/infrastructure-setup.md](docs/infrastructure-setup.md) for full DB setup.
+
+**HTTP integration tests (Bash)** — requires a live Shopware backend with the plugin installed:
 
 ```bash
 cp .env.test.dist .env.test   # fill in once
@@ -370,7 +336,10 @@ tests/api_test.sh             # run the full HTTP suite
 
 ### Continuous Integration
 
-GitHub Actions runs the PHPUnit suite on every PR and on every push to `main` (matrix: PHP 8.2 / 8.3 / 8.4). See `.github/workflows/ci.yml`.
+GitHub Actions runs two jobs on every PR and push to `main` — see [.github/workflows/ci.yml](.github/workflows/ci.yml):
+
+- **phpunit** — unit tests on PHP 8.2 / 8.3 / 8.4 matrix; Xdebug coverage on 8.3 uploaded to Codecov
+- **pdo-integration** — PDO integration tests against a PostgreSQL 17 service container
 
 ### After code changes
 
@@ -381,22 +350,6 @@ cd /var/www/shopware
 rm -rf /var/www/shopware/var/cache/*
 ./bin/console cache:clear
 ```
-
----
-
-> **Two roadmaps, two axes.** This table tracks **endpoint coverage**. The infra/load axis (sync plugin → read projection → write queue) is tracked in `docs/order-api-concept.md` §2, Option C. README Phase 4 ↔ concept Phase 2 (reads); README Phase 5 ↔ concept Phase 3 (writes) + dedicated auth.
-
-| Phase | Description |
-|---|---|
-| **1 (done)** | Plugin skeleton, `GET /v1/orders` + `GET /v1/orders/{id}`, cursor pagination, filters, RFC 9457 errors, Shopware OAuth 2.0 (password + client credentials), QueryValidator |
-| **2 (done)** | `PUT` status transitions (order, payment, delivery), `POST /v1/orders` via CartService + OrderPersister, OrderMapper, `Location` + `ETag` headers, full spec-compliant `Order` shape |
-| **3 (done)** | `PATCH /v1/orders/{id}`, `DELETE /v1/orders/{id}` (soft cancel), Delivery sub-resource (list, get, create-split, patch tracking, status transition) — line-item allocation (`positions`) and richer PATCH fields remain for a follow-up |
-| **Hardening (done — backlog T1–T11)** | Idempotency-Key enforcement (T2), If-Match/ETag optimistic concurrency (T3), `sort` (T4) + `salesChannelId` (T5) + `customerId` UUID (T6) on list, soft-delete correctness (T7), POST validation (T8), mapper delivery consistency (T9), delivery 422 problem+json (T10), HTTP/CI test coverage (T11), doc alignment (T1). See `docs/BACKLOG.md`. |
-| **Concurrency hardening (done)** | TOCTOU-safe write path: `FlockStore`-backed write lock serialises concurrent PATCH/DELETE/status mutations per order; idempotency per-key lock closes the duplicate-execution window. Delivery mutations (`PATCH /deliveries`, `PUT /deliveries/status`) now enforce `If-Match`. `OrderPatchService` collapsed to a single atomic DAL write. Read projection refreshed on delivery state transitions (`order_delivery.written`). PHPUnit coverage + Codecov integration added to CI. |
-| **ERP pull-sync (done — T12)** | `GET /v1/erp/orders` pull queue + `POST /v1/erp/orders/acknowledge` with the `erpSyncedAt` flag (see `docs/erp-pull-sync-concept.md`). Complements the webhook/`shipment-events` design in §7a, which remains a follow-up. |
-| **4 (done — T13)** | Read projection fed by Shopware `order.written`/`order.deleted` events — decouples read traffic from the shop DB (Postgres JSONB; concept §2 Phase 2). Off by default via `ORDER_INTEGRATION_PROJECTION_READS`. |
-| **4b** | **ERP webhook path** — outbound `order.created` webhook, inbound batched `POST /shipment-events` for FFP-driven shipment status & tracking (see `docs/order-api-concept.md` §7a) |
-| **5 (partial — T13)** | Write queue + bounded async workers (Postgres `SKIP LOCKED`, retry, backpressure; concept §2 Phase 3), off by default via `ORDER_INTEGRATION_ASYNC_WRITES`. Validated end-to-end on the BE and A/B-benchmarked (`docs/benchmark.md`): client-visible write p95 −80%, reads up to +191% throughput; worker count scales drain time ~linearly. Dedicated auth (API key / mTLS), ACL scopes, rate limiting — still open. |
 
 ---
 
@@ -438,25 +391,7 @@ provisioning, PostgreSQL config, schema, env for testing (`.env.test` /
 
 ### Measured impact (sync vs async CQRS)
 
-A/B benchmark on the BE (`tests/benchmark.py`) — 300 writes + 1500 reads at
-concurrency 24, synchronous baseline vs async CQRS with 2 drain workers:
-
-| Metric | Baseline (sync) | CQRS async (2 workers) |
-|---|---:|---:|
-| Write throughput (req/s) | 18.3 | 99.4 (+443%) |
-| Write latency p95 — client-visible (ms) | 1633 | 310 (−81%) |
-| Read throughput (req/s) | 44.0 | 128.1 (+191%) |
-| Read latency p95 (ms) | 879 | 265 (−70%) |
-| Write **end-to-end** completion p95 (ms) | ~1 600 (sync) | ~40 700 (queued) |
-| Errors | 0 | 0 |
-
-The API becomes far more responsive under write load (enqueue p95 −81%,
-throughput +443%) and projection reads are ~2× faster. The cost is **eventual
-consistency**: a burst of queued writes takes tens of seconds to fully apply,
-scaling ~linearly with worker count (1 → 2 workers roughly halved completion
-time). At this concurrency neither path errored — the queue's *saturation
-protection* shows at higher load. Full table, 1-worker numbers and how to
-reproduce: `docs/benchmark.md`.
+A/B benchmark on the BE (`tests/benchmark.py`) measured write p95 −81%, write throughput +443%, and read throughput +191% over the synchronous baseline. Full results and reproduction steps: [docs/benchmark.md](docs/benchmark.md).
 
 ---
 
@@ -472,15 +407,15 @@ license** from the author. Contact: Dr.-Ing. Markus Friedrich
 
 ## Reference documents
 
-- `docs/order-api-concept.md` — full architecture analysis, Options A/B/C, ERP integration design, security model
-- `docs/order-api-openapi.yaml` — OpenAPI 3.1 spec for the full target API surface
-- `docs/spike-order-creation.md` — analysis of four order-creation paths in Shopware 6
-- `docs/erp-pull-sync-concept.md` — ERP pull queue + acknowledge flag design (T12)
-- `docs/testing.md` — unit vs. integration test layers and the CI gap
-- `docs/BACKLOG.md` — the hardening backlog (T1–T11) with per-task rationale
-- `docs/benchmark.md` — A/B load benchmark tool + observed sync-vs-async results
-- `docs/release.md` — versioning, tagging, and the packaging/release workflow
-- `docs/cqrs-write-queue-concept.md` — CQRS read projection + write-queue design (Option C / T13)
-- `docs/infrastructure-setup.md` — read/queue DB LXC, schema, env, and worker setup (T13)
+- [docs/order-api-concept.md](docs/order-api-concept.md) — full architecture analysis, Options A/B/C, ERP integration design, security model
+- [docs/order-api-openapi.yaml](docs/order-api-openapi.yaml) — OpenAPI 3.1 spec for the full target API surface
+- [docs/spike-order-creation.md](docs/spike-order-creation.md) — analysis of four order-creation paths in Shopware 6
+- [docs/erp-pull-sync-concept.md](docs/erp-pull-sync-concept.md) — ERP pull queue + acknowledge flag design (T12)
+- [docs/testing.md](docs/testing.md) — unit vs. integration test layers and the CI gap
+- [docs/BACKLOG.md](docs/BACKLOG.md) — the hardening backlog (T1–T11) with per-task rationale
+- [docs/benchmark.md](docs/benchmark.md) — A/B load benchmark tool + observed sync-vs-async results
+- [docs/release.md](docs/release.md) — versioning, tagging, and the packaging/release workflow
+- [docs/cqrs-write-queue-concept.md](docs/cqrs-write-queue-concept.md) — CQRS read projection + write-queue design (Option C / T13)
+- [docs/infrastructure-setup.md](docs/infrastructure-setup.md) — read/queue DB LXC, schema, env, and worker setup (T13)
 
 
