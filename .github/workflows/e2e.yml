@@ -48,6 +48,25 @@ jobs:
           php bin/console plugin:install --activate OrderIntegration
           php bin/console cache:clear
 
+      - name: Diagnose install state
+        run: |
+          echo "=== MySQL connection ==="
+          mysql -u root -h 127.0.0.1 -e "SELECT 'ok'" 2>&1 || echo "FAILED (exit $?)"
+          echo "=== sales_channel rows ==="
+          mysql -u root -h 127.0.0.1 shopware --batch -e "SELECT id, name, type_id FROM sales_channel" 2>&1 || echo "FAILED"
+          echo "=== tax rows ==="
+          mysql -u root -h 127.0.0.1 shopware --batch -e "SELECT COUNT(*) FROM tax" 2>&1 || echo "FAILED"
+          echo "=== currency rows ==="
+          mysql -u root -h 127.0.0.1 shopware --batch -e "SELECT iso_code FROM currency" 2>&1 || echo "FAILED"
+          echo "=== admin user ==="
+          mysql -u root -h 127.0.0.1 shopware --batch -e "SELECT username, admin FROM user" 2>&1 || echo "FAILED"
+          echo "=== OAuth token test ==="
+          curl -sv -X POST "$SHOPWARE_URL/api/oauth/token" \
+            -H 'Content-Type: application/json' \
+            -d '{"grant_type":"password","client_id":"administration","username":"admin","password":"shopware","scopes":"write"}' \
+            2>&1 | tail -30
+        continue-on-error: true
+
       - name: Seed test data
         run: |
           # Read Sales Channel, Tax, Currency from MySQL.
