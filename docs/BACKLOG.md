@@ -5,14 +5,15 @@ self-hosting / Order Integration Plugin). Jeder Task ist als eigener Branch
 umgesetzt und als separater PR gegen `main` gedacht.
 
 Legende Typ: **bug** = Fehlverhalten · **spec-drift** = OpenAPI verspricht
-mehr als der Code hält · **doc** = Doku ↔ Realität · **test** = Abdeckung.
+mehr als der Code hält · **doc** = Doku ↔ Realität · **test** = Abdeckung ·
+**feat** = neue Funktionalität.
 
-**Umsetzungsstand (Stand dieser Revision):** T1–T11 sowie T12 (ERP pull-sync)
-und die Cross-Cutting-PRs T2 (Idempotency-Key) und T3 (If-Match) sind in `main`
-gemergt und durch `tests/api_test.sh` + die PHPUnit-Suite abgedeckt. Offen:
-T13 (CQRS Read-Projection + Write-Queue, Infrastruktur) — separater PR. Spätere
-Follow-ups: ERP-Webhook/`shipment-events` (Konzept §7a), Rate-Limiting,
-dedizierte Auth (mTLS/API-Key), Idempotenz/If-Match auch auf der Delivery-Sub-Resource.
+**Umsetzungsstand (Stand dieser Revision):** T1–T13 sind vollständig in `main`
+gemergt und durch `tests/api_test.sh` + die PHPUnit-Suite abgedeckt.
+T13 (CQRS Read-Projection + Write-Queue) ist off-by-default via Env-Flags.
+Offene Follow-ups: ERP-Webhook/`shipment-events` (Konzept §7a), Rate-Limiting,
+dedizierte Auth (mTLS/API-Key), `GET /orders/{id}/events`, `?hard=true`-Delete,
+Idempotenz/If-Match auf der Delivery-Sub-Resource.
 
 | ID | Titel | Typ | Schwere | Branch |
 |----|-------|-----|---------|--------|
@@ -27,6 +28,8 @@ dedizierte Auth (mTLS/API-Key), Idempotenz/If-Match auch auf der Delivery-Sub-Re
 | T9 | OrderMapper `last()` vs `first()` Delivery | bug | mittel | `fix/t9-delivery-consistency` |
 | T10 | DeliveryController 422 ohne problem+json | bug | niedrig | `fix/t10-delivery-422-contenttype` |
 | T11 | HTTP-Schicht nicht in CI getestet | test | mittel | `test/t11-http-coverage` |
+| T12 | ERP pull queue + acknowledge-Flag | feat | hoch | `feat/t12-erp-pull-sync` (gemergt) |
+| T13 | CQRS Read-Projection + Write-Queue | feat | hoch | `feat/t13-cqrs-write-queue` (gemergt) |
 
 ---
 
@@ -117,3 +120,28 @@ OrderPatchService, DeliveryController sind nur über die Bash-Integrationstests
 **Ziel.** Pure Controller-/Mapping-Logik extrahieren und unit-testen; einen
 optionalen Integrations-CI-Job dokumentieren/scaffolden.
 **Akzeptanz.** Neue Unit-Tests laufen in CI; Integrations-Job ist beschrieben.
+
+---
+
+## T12 — ERP pull queue + acknowledge-Flag  · feat · hoch  ✅ gemergt
+**Problem.** Der ERP-iPaaS hat keine zuverlässige Möglichkeit, alle unbearbeiteten
+Bestellungen zu ziehen und sicherzustellen, dass keine zweimal weitergeleitet wird.
+**Lösung.** `GET /v1/erp/orders` (FIFO-Queue, nur unacknowledged), `POST
+/v1/erp/orders/acknowledge` (Batch 1–500, setzt `customFields.erpSyncedAt`).
+Idempotent: bereits gesynced IDs werden gemeldet, nicht erneut gestempelt.
+**Details.** Siehe `docs/erp-pull-sync-concept.md`. Kernlogik in `ErpSyncPolicy`
+(unit-tested), DAL in `ErpSyncService`, HTTP in `ErpSyncController`.
+
+## T13 — CQRS Read-Projection + Write-Queue  · feat · hoch  ✅ gemergt (off by default)
+**Problem.** Synchrone Writes unter Lastspitzen sättigen Shopwares DAL; Reads
+belegen denselben DB-Pool wie die Storefront.
+**Lösung.** Opt-in via Env-Flags:
+- `ORDER_INTEGRATION_ASYNC_WRITES=true` → `POST /v1/orders` enqueued (202 + Job-URL),
+  Worker-Pool (`bin/console order-integration:write-queue:drain`) appliziert via Shopware-Services.
+- `ORDER_INTEGRATION_PROJECTION_READS=true` → GETs aus Postgres-JSONB-Projection
+  (`OrderProjectionSubscriber` auf `order.written`/`order.deleted`).
+**Infrastruktur.** Eigene PostgreSQL-17-LXC (`order-integration-db`). Setup in
+`docs/infrastructure-setup.md`. Schema in `docs/sql/order_integration_schema.sql`.
+**Benchmark.** 300 Writes + 1500 Reads, Concurrency 24: Write-Throughput +443%,
+Write-p95 −81%, Read-Throughput +191%, Read-p95 −70%, Fehler 0.
+Details in `docs/benchmark.md`.

@@ -74,19 +74,23 @@ Build a small Shopware plugin that registers one Admin API route, e.g. `POST /ap
 
 **Reject** Path 1 (broken pricing) and Path 3 (Store API not for this load).
 
+> **Implementation outcome (post-spike).** Path 4 was implemented directly from the start — the plugin (`OrderIntegration`) uses `CartService` + `OrderConverter` + `OrderPersister` in-process. Path 2 was never built as an intermediate step. The "open questions" below were resolved: a shared API sales channel is used, both registered customers and guest-style orders are supported, orders arrive already paired with a payment reference (no Shopware payment flow triggered), promotion codes are not passed by callers, and B2B suite flows are out of scope.
+
 Across all phases:
 
 - All write traffic goes through the facade's write queue (see concept §2, Option C). The queue applies per-Shopware concurrency caps so creation traffic cannot starve the storefront.
 - Idempotency lives in the facade's idempotency store, **not** in Shopware. Re-execution against Shopware is avoided by the facade detecting the replay before the worker dispatches the call.
 - The `OrderEventNotification` webhook for `order.created` is fired by the facade after it confirms Shopware accepted the order, not by Shopware directly — keeps the contract single-sourced.
 
-## Open questions to resolve in the spike sprint
+## Open questions (resolved)
 
-1. Which sales channel(s) does the facade operate against? One per partner, or one shared "API sales channel"?
-2. Customer model: do callers always send a registered `customerId`, do we always create a guest, or both?
-3. Payment method handling: do orders arrive already paid (caller supplies a transaction reference) or do we trigger a Shopware payment? Only the former is realistic for a service-to-service flow.
-4. Promotions: are promotion codes ever passed in by callers, or are promotions applied only via Shopware-side rules?
-5. B2B suite: are quote-to-order or approval flows in scope?
+These were outstanding at spike time; all are resolved:
+
+1. **Sales channel:** a shared "API sales channel" is used. Callers supply `salesChannelId` on `POST /orders`.
+2. **Customer model:** both paths are supported — callers may supply a registered `customer.id` or create a guest order by providing billing/shipping address without a customer id.
+3. **Payment method:** orders arrive already accounted for externally. No Shopware payment flow is triggered; the order is created with a placeholder payment state.
+4. **Promotions:** not passed by callers. Shopware-side rules only.
+5. **B2B suite:** out of scope.
 
 ## Sources
 

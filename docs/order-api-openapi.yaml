@@ -71,6 +71,12 @@ tags:
     description: |
       Inbound channel for the ERP to push fulfillment-partner events
       (shipped, in_transit, delivered, exception). High-volume, batched, async.
+  - name: ERP
+    description: |
+      ERP iPaaS integration — pull queue and acknowledge. Implemented (T12).
+  - name: Jobs
+    description: |
+      Async job status polling for write-queue mutations. Implemented (T13).
   - name: Webhooks
     description: Subscriber-managed push notifications for order events.
 
@@ -1109,6 +1115,8 @@ components:
             webhooks:manage: Create, list, and delete webhook subscriptions.
             deliveries:read: Read shipment / delivery data.
             deliveries:write: Create and modify deliveries (tracking, addresses, state).
+            erp:read: Pull unacknowledged orders from the ERP pull queue.
+            erp:write: Acknowledge orders as forwarded to the ERP.
             shipment-events:ingest: |
               ERP/FFP-class scope. Batch-ingest shipment events.
               Higher rate-limit class.
@@ -1596,7 +1604,10 @@ components:
           format: uuid
         status:
           type: string
-          enum: [queued, in_progress, succeeded, failed]
+          enum: [queued, in_progress, succeeded, dead]
+          description: |
+            Terminal states: `succeeded` (applied to Shopware) or `dead`
+            (exhausted all retry attempts — inspect via admin tooling).
         resourceUrl:
           type: string
           format: uri
