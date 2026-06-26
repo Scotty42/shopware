@@ -58,7 +58,8 @@ jobs:
         run: |
           vendor/bin/phpunit --testsuite=Unit \
             --coverage-clover coverage.xml \
-            --coverage-text
+            --coverage-text \
+            --min-line-coverage=80
         env:
           XDEBUG_MODE: coverage
 
