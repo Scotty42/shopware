@@ -61,23 +61,20 @@ jobs:
       - name: Seed test data
         run: |
           # Read Sales Channel, Tax, Currency from MySQL.
-          # The Admin API is unreliable right after cache:clear in APP_ENV=test,
-          # and accessKey lacks ApiAware in Shopware 6.6 anyway.
+          # LOWER(HEX(id)) yields 32-char hex (no dashes). Shopware's DAL
+          # validator accepts /^[0-9a-f]{32}$/ directly, but rejects the dashed
+          # form when the UUID is v7 (third nibble '7…') — which Shopware 6.6
+          # uses for new entities. Use raw hex throughout.
           db() { mysql -u root -h 127.0.0.1 shopware --batch --skip-column-names -e "$1"; }
-          hex2uuid() { local h=$1; echo "${h:0:8}-${h:8:4}-${h:12:4}-${h:16:4}-${h:20:12}"; }
 
           SC_HEX=$(db "SELECT LOWER(HEX(id)) FROM sales_channel LIMIT 1")
           [ -n "$SC_HEX" ] || { echo "FATAL: sales_channel table is empty"; exit 1; }
-          SC_ID=$(hex2uuid "$SC_HEX")
           SC_KEY=$(db "SELECT access_key FROM sales_channel LIMIT 1")
 
           TAX_HEX=$(db "SELECT LOWER(HEX(id)) FROM tax LIMIT 1")
-          TAX_ID=$(hex2uuid "$TAX_HEX")
-
           CURRENCY_HEX=$(db "SELECT LOWER(HEX(id)) FROM currency WHERE iso_code='EUR' LIMIT 1")
-          CURRENCY_ID=$(hex2uuid "$CURRENCY_HEX")
 
-          echo "SC_ID=$SC_ID  TAX_ID=$TAX_ID  CURRENCY_ID=$CURRENCY_ID"
+          echo "SC=$SC_HEX  TAX=$TAX_HEX  CURRENCY=$CURRENCY_HEX"
 
           # Admin token (needed for product creation)
           TOKEN=$(curl -sf -X POST "$SHOPWARE_URL/api/oauth/token" \
@@ -85,7 +82,7 @@ jobs:
             -d "{\"grant_type\":\"password\",\"client_id\":\"administration\",\"username\":\"$SHOPWARE_ADMIN_USER\",\"password\":\"$SHOPWARE_ADMIN_PASSWORD\",\"scopes\":\"write\"}" \
             | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 
-          # Create test product via Admin API
+          # Create test product via Admin API (32-char hex IDs accepted by Shopware DAL)
           PROD_ID=$(python3 -c "import uuid; print(str(uuid.uuid4()).replace('-',''))")
           HTTP_CODE=$(curl -s -o /tmp/prod_resp.json -w "%{http_code}" -X POST "$SHOPWARE_URL/api/product" \
             -H "Authorization: Bearer $TOKEN" \
@@ -95,9 +92,9 @@ jobs:
               \"name\": \"CI Test Product\",
               \"productNumber\": \"CI-TEST-001\",
               \"stock\": 100,
-              \"price\": [{\"currencyId\": \"$CURRENCY_ID\", \"gross\": 19.99, \"net\": 16.80, \"linked\": true}],
-              \"taxId\": \"$TAX_ID\",
-              \"visibilities\": [{\"salesChannelId\": \"$SC_ID\", \"visibility\": 30}],
+              \"price\": [{\"currencyId\": \"$CURRENCY_HEX\", \"gross\": 19.99, \"net\": 16.80, \"linked\": true}],
+              \"taxId\": \"$TAX_HEX\",
+              \"visibilities\": [{\"salesChannelId\": \"$SC_HEX\", \"visibility\": 30}],
               \"active\": true
             }")
           if [[ "$HTTP_CODE" -ge 300 ]]; then
@@ -109,7 +106,7 @@ jobs:
           # Write .env.test before create_test_order.sh (which sources it)
           printf 'SHOPWARE_URL=%s\nSHOPWARE_ADMIN_USER=%s\nSHOPWARE_ADMIN_PASSWORD=%s\nSHOPWARE_STORE_ACCESS_KEY=%s\nSHOPWARE_SALES_CHANNEL_ID=%s\nSHOPWARE_TEST_PRODUCT_ID=%s\nSHOPWARE_STOREFRONT_URL=%s\n' \
             "$SHOPWARE_URL" "$SHOPWARE_ADMIN_USER" "$SHOPWARE_ADMIN_PASSWORD" \
-            "$SC_KEY" "$SC_ID" "$PROD_ID" "$SHOPWARE_URL" \
+            "$SC_KEY" "$SC_HEX" "$PROD_ID" "$SHOPWARE_URL" \
             > $GITHUB_WORKSPACE/plugin-src/.env.test
 
           # Seed one order via create_test_order.sh
