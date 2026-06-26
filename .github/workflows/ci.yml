@@ -58,8 +58,13 @@ jobs:
         run: |
           vendor/bin/phpunit --testsuite=Unit \
             --coverage-clover coverage.xml \
-            --coverage-text \
-            --min-line-coverage=80
+            --coverage-text
+          php -r '
+            $m = simplexml_load_file("coverage.xml")->project->metrics;
+            $pct = (float)$m["coveredstatements"] / (float)$m["statements"] * 100;
+            printf("Line coverage: %.1f%%\n", $pct);
+            if ($pct < 80) { fwrite(STDERR, "FAIL: line coverage below 80% threshold\n"); exit(1); }
+          '
         env:
           XDEBUG_MODE: coverage
 
