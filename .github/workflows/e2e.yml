@@ -56,11 +56,12 @@ jobs:
             -d "{\"grant_type\":\"password\",\"client_id\":\"administration\",\"username\":\"$SHOPWARE_ADMIN_USER\",\"password\":\"$SHOPWARE_ADMIN_PASSWORD\",\"scopes\":\"write\"}" \
             | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 
-          # Sales channel: get first channel (created by init:db)
+          # Sales channel ID via API; accessKey read from DB (field lacks ApiAware flag in 6.6)
           SC=$(curl -sf -H "Authorization: Bearer $TOKEN" \
             "$SHOPWARE_URL/api/sales-channel?limit=1")
-          SC_ID=$(echo "$SC"   | python3 -c "import sys,json; print(json.load(sys.stdin)['data'][0]['id'])")
-          SC_KEY=$(echo "$SC"  | python3 -c "import sys,json; print(json.load(sys.stdin)['data'][0]['accessKey'])")
+          SC_ID=$(echo "$SC" | python3 -c "import sys,json; print(json.load(sys.stdin)['data'][0]['id'])")
+          SC_KEY=$(mysql -u root -h 127.0.0.1 shopware --batch --skip-column-names -e \
+            "SELECT access_key FROM sales_channel WHERE id = UNHEX(REPLACE('${SC_ID}', '-', '')) LIMIT 1")
 
           # Tax and currency IDs
           TAX_ID=$(curl -sf -H "Authorization: Bearer $TOKEN" \
