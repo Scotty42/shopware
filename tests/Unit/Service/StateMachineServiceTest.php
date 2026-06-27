@@ -158,4 +158,77 @@ final class StateMachineServiceTest extends TestCase
         $this->expectException(StateMachineException::class);
         $this->service->transitionOrder('order-id', 'completed', $this->context);
     }
+
+    #[DataProvider('paymentTransitionProvider')]
+    public function testTransitionPaymentTranslatesAllDomainStatusesToShopwareActions(
+        string $domain,
+        string $expectedAction,
+    ): void {
+        $this->registry
+            ->expects(self::once())
+            ->method('transition')
+            ->with(self::callback(fn(Transition $t): bool =>
+                $t->getEntityName() === 'order_transaction'
+                && $t->getTransitionName() === $expectedAction
+            ));
+
+        $this->service->transitionPayment('tx-id-full', $domain, $this->context);
+    }
+
+    public static function paymentTransitionProvider(): array
+    {
+        return [
+            'paid -> paid'                         => ['paid',               'paid'],
+            'authorized -> authorize'              => ['authorized',         'authorize'],
+            'refunded -> refund'                   => ['refunded',           'refund'],
+            'refunded_partially -> refund_partially' => ['refunded_partially', 'refund_partially'],
+            'failed -> fail'                       => ['failed',             'fail'],
+            'open -> reopen'                       => ['open',               'reopen'],
+            'reminded -> remind'                   => ['reminded',           'remind'],
+        ];
+    }
+
+    public function testTransitionPaymentThrowsForUnknownStatus(): void
+    {
+        $this->registry->expects(self::never())->method('transition');
+
+        $this->expectException(InvalidTransitionException::class);
+        $this->service->transitionPayment('tx-id', 'unknown_payment_status', $this->context);
+    }
+
+    #[DataProvider('deliveryTransitionProvider')]
+    public function testTransitionDeliveryTranslatesAllDomainStatusesToShopwareActions(
+        string $domain,
+        string $expectedAction,
+    ): void {
+        $this->registry
+            ->expects(self::once())
+            ->method('transition')
+            ->with(self::callback(fn(Transition $t): bool =>
+                $t->getEntityName() === 'order_delivery'
+                && $t->getTransitionName() === $expectedAction
+            ));
+
+        $this->service->transitionDelivery('delivery-id-full', $domain, $this->context);
+    }
+
+    public static function deliveryTransitionProvider(): array
+    {
+        return [
+            'shipped -> ship'                          => ['shipped',            'ship'],
+            'shipped_partially -> ship_partially'      => ['shipped_partially',  'ship_partially'],
+            'returned -> return'                       => ['returned',           'return'],
+            'returned_partially -> return_partially'   => ['returned_partially', 'return_partially'],
+            'open -> reopen'                           => ['open',               'reopen'],
+            'cancelled -> cancel'                      => ['cancelled',          'cancel'],
+        ];
+    }
+
+    public function testTransitionDeliveryThrowsForUnknownStatus(): void
+    {
+        $this->registry->expects(self::never())->method('transition');
+
+        $this->expectException(InvalidTransitionException::class);
+        $this->service->transitionDelivery('delivery-id', 'unknown_delivery_status', $this->context);
+    }
 }

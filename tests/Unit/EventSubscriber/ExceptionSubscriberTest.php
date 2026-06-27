@@ -4,8 +4,12 @@ namespace Scotty42\OrderIntegration\Tests\Unit\EventSubscriber;
 
 use PHPUnit\Framework\TestCase;
 use Scotty42\OrderIntegration\EventSubscriber\ExceptionSubscriber;
+use Scotty42\OrderIntegration\Exception\IdempotencyConflictException;
 use Scotty42\OrderIntegration\Exception\InvalidTransitionException;
+use Scotty42\OrderIntegration\Exception\MissingIdempotencyKeyException;
 use Scotty42\OrderIntegration\Exception\OrderNotFoundException;
+use Scotty42\OrderIntegration\Exception\PreconditionFailedException;
+use Scotty42\OrderIntegration\Exception\PreconditionRequiredException;
 use Scotty42\OrderIntegration\Exception\ValidationException;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -84,5 +88,57 @@ class ExceptionSubscriberTest extends TestCase
     {
         $event = $this->dispatch('/api/order-integration/v1/orders/x', new \RuntimeException('boom'));
         self::assertNull($event->getResponse());
+    }
+
+    public function testMissingIdempotencyKeyExceptionBecomes400(): void
+    {
+        $event = $this->dispatch(
+            '/api/order-integration/v1/orders',
+            new MissingIdempotencyKeyException(),
+        );
+
+        self::assertSame(400, $event->getResponse()->getStatusCode());
+        self::assertSame('application/problem+json', $event->getResponse()->headers->get('Content-Type'));
+        $body = json_decode((string) $event->getResponse()->getContent(), true);
+        self::assertSame('order.idempotency_key_required', $body['code']);
+    }
+
+    public function testIdempotencyConflictExceptionBecomes409(): void
+    {
+        $event = $this->dispatch(
+            '/api/order-integration/v1/orders',
+            new IdempotencyConflictException('test-key'),
+        );
+
+        self::assertSame(409, $event->getResponse()->getStatusCode());
+        self::assertSame('application/problem+json', $event->getResponse()->headers->get('Content-Type'));
+        $body = json_decode((string) $event->getResponse()->getContent(), true);
+        self::assertSame('order.idempotency_key_reused', $body['code']);
+    }
+
+    public function testPreconditionFailedExceptionBecomes412(): void
+    {
+        $event = $this->dispatch(
+            '/api/order-integration/v1/orders/x',
+            new PreconditionFailedException(),
+        );
+
+        self::assertSame(412, $event->getResponse()->getStatusCode());
+        self::assertSame('application/problem+json', $event->getResponse()->headers->get('Content-Type'));
+        $body = json_decode((string) $event->getResponse()->getContent(), true);
+        self::assertSame('order.precondition_failed', $body['code']);
+    }
+
+    public function testPreconditionRequiredExceptionBecomes428(): void
+    {
+        $event = $this->dispatch(
+            '/api/order-integration/v1/orders/x',
+            new PreconditionRequiredException(),
+        );
+
+        self::assertSame(428, $event->getResponse()->getStatusCode());
+        self::assertSame('application/problem+json', $event->getResponse()->headers->get('Content-Type'));
+        $body = json_decode((string) $event->getResponse()->getContent(), true);
+        self::assertSame('order.precondition_required', $body['code']);
     }
 }

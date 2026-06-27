@@ -4,6 +4,7 @@ namespace Scotty42\OrderIntegration\Tests\Unit\Service;
 
 use PHPUnit\Framework\TestCase;
 use Scotty42\OrderIntegration\Service\OrderMapper;
+use Shopware\Core\Checkout\Customer\CustomerEntity;
 use Shopware\Core\Checkout\Order\Aggregate\OrderAddress\OrderAddressEntity;
 use Shopware\Core\Checkout\Order\Aggregate\OrderDelivery\OrderDeliveryCollection;
 use Shopware\Core\Checkout\Order\Aggregate\OrderDelivery\OrderDeliveryEntity;
@@ -317,5 +318,60 @@ final class OrderMapperTest extends TestCase
         }
 
         return $delivery;
+    }
+
+    public function testMapCustomerReturnsNullGuestWhenGetCustomerReturnsNull(): void
+    {
+        // When getCustomer() exists but returns null (association not loaded),
+        // the guest field must be null — the method_exists() check passes but
+        // the falsy return short-circuits the expression.
+        $orderCustomer = $this->createMock(\Shopware\Core\Checkout\Order\Aggregate\OrderCustomer\OrderCustomerEntity::class);
+        $orderCustomer->method('getCustomerId')->willReturn('cust-id-1');
+        $orderCustomer->method('getEmail')->willReturn('test@example.com');
+        $orderCustomer->method('getFirstName')->willReturn('Jane');
+        $orderCustomer->method('getLastName')->willReturn('Doe');
+        $orderCustomer->method('getCustomer')->willReturn(null);
+
+        $order = $this->createMock(OrderEntity::class);
+        $order->method('getOrderCustomer')->willReturn($orderCustomer);
+        $order->method('getBillingAddressId')->willReturn(str_repeat('c', 32));
+        $order->method('getAmountTotal')->willReturn(0.0);
+        $order->method('getAmountNet')->willReturn(0.0);
+        $order->method('getShippingTotal')->willReturn(0.0);
+        $order->method('getPositionPrice')->willReturn(0.0);
+
+        $payload = $this->mapper->mapOrder($order);
+
+        $this->assertNotNull($payload['customer']);
+        $this->assertNull($payload['customer']['guest'], 'guest must be null when getCustomer() returns null');
+        $this->assertSame('cust-id-1', $payload['customer']['id']);
+        $this->assertSame('test@example.com', $payload['customer']['email']);
+    }
+
+    public function testMapCustomerReturnsGuestTrueWhenCustomerIsGuest(): void
+    {
+        $customer = new CustomerEntity();
+        $customer->setId('cust-id-2');
+        $customer->setGuest(true);
+
+        $orderCustomer = $this->createMock(\Shopware\Core\Checkout\Order\Aggregate\OrderCustomer\OrderCustomerEntity::class);
+        $orderCustomer->method('getCustomerId')->willReturn('cust-id-2');
+        $orderCustomer->method('getEmail')->willReturn('guest@example.com');
+        $orderCustomer->method('getFirstName')->willReturn('John');
+        $orderCustomer->method('getLastName')->willReturn('Guest');
+        $orderCustomer->method('getCustomer')->willReturn($customer);
+
+        $order = $this->createMock(OrderEntity::class);
+        $order->method('getOrderCustomer')->willReturn($orderCustomer);
+        $order->method('getBillingAddressId')->willReturn(str_repeat('c', 32));
+        $order->method('getAmountTotal')->willReturn(0.0);
+        $order->method('getAmountNet')->willReturn(0.0);
+        $order->method('getShippingTotal')->willReturn(0.0);
+        $order->method('getPositionPrice')->willReturn(0.0);
+
+        $payload = $this->mapper->mapOrder($order);
+
+        $this->assertNotNull($payload['customer']);
+        $this->assertTrue($payload['customer']['guest'], 'guest must be true for a guest customer');
     }
 }

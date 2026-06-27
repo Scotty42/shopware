@@ -162,4 +162,30 @@ class OrderPatchServiceAtomicTest extends TestCase
 
         self::assertSame([['name' => 'urgent'], ['name' => 'vip']], $updatePayload['tags']);
     }
+
+    public function testNullOrderSearchResultSkipsAddressesKeyInUpdate(): void
+    {
+        // When search()->first() returns null (order not in DB at address-lookup time),
+        // patch() must still call update() but without an 'addresses' key in the payload.
+        $result = $this->createMock(EntitySearchResult::class);
+        $result->method('first')->willReturn(null);
+
+        $repo = $this->createMock(EntityRepository::class);
+        $repo->method('search')->willReturn($result);
+
+        $updatePayload = null;
+        $repo->expects(self::once())
+            ->method('update')
+            ->with(self::callback(function (array $p) use (&$updatePayload): bool {
+                $updatePayload = $p[0];
+
+                return true;
+            }), self::anything());
+
+        $service = new OrderPatchService($repo);
+        $service->patch('order-1', ['billingAddress' => ['street' => 'Main St 1']], Context::createDefaultContext());
+
+        self::assertNotNull($updatePayload);
+        self::assertArrayNotHasKey('addresses', $updatePayload);
+    }
 }
