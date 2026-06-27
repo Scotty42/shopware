@@ -36,7 +36,7 @@ bad() { echo "✗ $1"; ((FAIL++))||true; }
 jqpy() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)" 2>/dev/null; }
 idem() { python3 -c "import uuid;print(uuid.uuid4())"; }            # fresh Idempotency-Key
 
-TOKEN=$(curl -sf -X POST "$SHOPWARE_URL/api/oauth/token" \
+TOKEN=$(curl -sf --max-time 30 -X POST "$SHOPWARE_URL/api/oauth/token" \
   -H 'Content-Type: application/json' \
   "${CF_ARGS[@]}" \
   -d "{\"grant_type\":\"password\",\"client_id\":\"administration\",\"username\":\"$SHOPWARE_ADMIN_USER\",\"password\":\"$SHOPWARE_ADMIN_PASSWORD\",\"scope\":\"write\",\"scopes\":\"write\"}" \
@@ -56,6 +56,7 @@ AUTH=(-H "Authorization: Bearer $TOKEN" "${CF_ARGS[@]}")
 JSON=(-H "Content-Type: application/json")
 
 CUSTOMER_ID=$(curl -s "${AUTH[@]}" "$SHOPWARE_URL/api/customer?limit=1" | jqpy "d['data'][0]['id']")
+[[ -n "$CUSTOMER_ID" ]] || { echo "FATAL: CUSTOMER_ID empty — seed may have failed"; exit 1; }
 ORDER_BODY="{\"salesChannelId\":\"$SHOPWARE_SALES_CHANNEL_ID\",\"customer\":{\"id\":\"$CUSTOMER_ID\"},\"lineItems\":[{\"productId\":\"$SHOPWARE_TEST_PRODUCT_ID\",\"quantity\":1}]}"
 
 # Create an order (mutating -> Idempotency-Key; create has no If-Match).
@@ -147,6 +148,7 @@ except Exception: print('missing')")
   [[ "$v" == "present" ]] && { echo "✓ $d"; ((PASS++))||true; } || { echo "✗ $d — $v at $path"; ((FAIL++))||true; }
 }
 SAMPLE_ID=$(echo "$LIST" | jqpy "d['items'][0]['id']")
+[[ -n "$SAMPLE_ID" ]] || { echo "FATAL: SAMPLE_ID empty — seed may have failed"; exit 1; }
 OJSON=$(curl -s "${AUTH[@]}" "$BASE/orders/$SAMPLE_ID")
 for f in paymentStatus deliveryStatus currency version customer billingAddress lineItems; do
   assert_field "GET single has $f" "$OJSON" "$f"

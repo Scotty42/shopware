@@ -60,6 +60,11 @@ jobs:
 
       - name: Seed test data
         run: |
+          # Wait for Shopware web server to accept connections before seeding
+          until curl -sf --max-time 5 "$SHOPWARE_URL/api/_info/version" > /dev/null 2>&1; do
+            echo "Waiting for Shopware..."; sleep 3
+          done
+
           # Read Sales Channel, Tax, Currency from MySQL.
           # LOWER(HEX(id)) yields 32-char hex (no dashes). Shopware's DAL
           # validator accepts /^[0-9a-f]{32}$/ directly, but rejects the dashed
@@ -77,20 +82,25 @@ jobs:
           echo "SC=$SC_HEX  TAX=$TAX_HEX  CURRENCY=$CURRENCY_HEX"
 
           # Admin token (needed for product creation)
-          TOKEN=$(curl -sf -X POST "$SHOPWARE_URL/api/oauth/token" \
+          TOKEN_HTTP=$(curl -s -o /tmp/token_resp.json -w "%{http_code}" -X POST "$SHOPWARE_URL/api/oauth/token" \
             -H 'Content-Type: application/json' \
-            -d "{\"grant_type\":\"password\",\"client_id\":\"administration\",\"username\":\"$SHOPWARE_ADMIN_USER\",\"password\":\"$SHOPWARE_ADMIN_PASSWORD\",\"scopes\":\"write\"}" \
-            | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+            -d "{\"grant_type\":\"password\",\"client_id\":\"administration\",\"username\":\"$SHOPWARE_ADMIN_USER\",\"password\":\"$SHOPWARE_ADMIN_PASSWORD\",\"scopes\":\"write\"}")
+          if [[ "$TOKEN_HTTP" -ge 300 ]]; then
+            echo "ERROR: OAuth token request returned HTTP $TOKEN_HTTP"
+            cat /tmp/token_resp.json
+            exit 1
+          fi
+          TOKEN=$(python3 -c "import json; print(json.load(open('/tmp/token_resp.json'))['access_token'])")
 
           # Create test product via Admin API (32-char hex IDs accepted by Shopware DAL)
           PROD_ID=$(python3 -c "import uuid; print(str(uuid.uuid4()).replace('-',''))")
-          HTTP_CODE=$(curl -s -o /tmp/prod_resp.json -w "%{http_code}" -X POST "$SHOPWARE_URL/api/product" \
+          HTTP_CODE=$(curl -s -o /tmp/prod_resp.json -w "%{http_code}" --max-time 30 -X POST "$SHOPWARE_URL/api/product" \
             -H "Authorization: Bearer $TOKEN" \
             -H 'Content-Type: application/json' \
             -d "{
               \"id\": \"$PROD_ID\",
               \"name\": \"CI Test Product\",
-              \"productNumber\": \"CI-TEST-001\",
+              \"productNumber\": \"CI-TEST-$PROD_ID\",
               \"stock\": 100,
               \"price\": [{\"currencyId\": \"$CURRENCY_HEX\", \"gross\": 19.99, \"net\": 16.80, \"linked\": true}],
               \"taxId\": \"$TAX_HEX\",
@@ -118,7 +128,7 @@ jobs:
 
       - name: Upload Shopware logs on failure
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: shopware-logs-6.6
           path: shopware/var/log/
