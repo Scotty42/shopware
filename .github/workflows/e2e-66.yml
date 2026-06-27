@@ -47,11 +47,11 @@ jobs:
           php bin/console plugin:refresh
           php bin/console plugin:install --activate OrderIntegration
           php bin/console cache:clear
-          # install-storefront:false skips sales-channel:create:storefront in basic-setup;
-          # create one explicitly if the table is still empty.
-          SC_COUNT=$(mysql -u root -h 127.0.0.1 shopware --batch --skip-column-names \
-            -e 'SELECT COUNT(*) FROM sales_channel')
-          if [ "$SC_COUNT" = "0" ]; then
+          # install-storefront:false may still create a headless channel; we need a
+          # storefront channel with the correct domain for storefrontUrl validation.
+          DOMAIN_COUNT=$(mysql -u root -h 127.0.0.1 shopware --batch --skip-column-names \
+            -e "SELECT COUNT(*) FROM sales_channel_domain WHERE url='${APP_URL:-http://localhost:8000}'")
+          if [ "$DOMAIN_COUNT" = "0" ]; then
             php bin/console sales-channel:create:storefront \
               --name="E2E" \
               --url="${APP_URL:-http://localhost:8000}" \
@@ -67,9 +67,9 @@ jobs:
           # uses for new entities. Use raw hex throughout.
           db() { mysql -u root -h 127.0.0.1 shopware --batch --skip-column-names -e "$1"; }
 
-          SC_HEX=$(db "SELECT LOWER(HEX(id)) FROM sales_channel LIMIT 1")
-          [ -n "$SC_HEX" ] || { echo "FATAL: sales_channel table is empty"; exit 1; }
-          SC_KEY=$(db "SELECT access_key FROM sales_channel LIMIT 1")
+          SC_HEX=$(db "SELECT LOWER(HEX(sc.id)) FROM sales_channel sc JOIN sales_channel_domain scd ON sc.id = scd.sales_channel_id WHERE scd.url='$SHOPWARE_URL' LIMIT 1")
+          [ -n "$SC_HEX" ] || { echo "FATAL: no storefront sales_channel with domain $SHOPWARE_URL found"; exit 1; }
+          SC_KEY=$(db "SELECT sc.access_key FROM sales_channel sc JOIN sales_channel_domain scd ON sc.id = scd.sales_channel_id WHERE scd.url='$SHOPWARE_URL' LIMIT 1")
 
           TAX_HEX=$(db "SELECT LOWER(HEX(id)) FROM tax LIMIT 1")
           CURRENCY_HEX=$(db "SELECT LOWER(HEX(id)) FROM currency WHERE iso_code='EUR' LIMIT 1")
