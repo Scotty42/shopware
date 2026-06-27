@@ -430,4 +430,17 @@ license** from the author. Contact: Dr.-Ing. Markus Friedrich
 - [docs/cqrs-write-queue-concept.md](docs/cqrs-write-queue-concept.md) — CQRS read projection + write-queue design (Option C / T13)
 - [docs/infrastructure-setup.md](docs/infrastructure-setup.md) — read/queue DB LXC, schema, env, and worker setup (T13)
 
+---
+
+## Development Team
+
+Before anyone says, “The agents did all the work…”
+
+That isn’t really the interesting question.
+
+The interesting question is whether we still understand the systems we build and whether we’re capable of judging the quality of what our tools produce.
+
+Implementation gets easier. Engineering gets more important.
+
+![Multi Agent Team](docs/assets/agentic_team.png)
 
