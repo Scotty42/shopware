@@ -29,8 +29,8 @@ jobs:
       - name: Setup Shopware
         uses: shopware/setup-shopware@v2
         with:
-          shopware-version: v6.5.8.14
-          php-version: '8.3'
+          shopware-version: v6.5.8.19
+          php-version: '8.2'
           install: 'true'
           install-locale: en-GB
           install-currency: EUR
