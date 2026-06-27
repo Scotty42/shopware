@@ -8,6 +8,7 @@ use Scotty42\OrderIntegration\Cqrs\PdoConnectionProvider;
 use Scotty42\OrderIntegration\Cqrs\Read\InMemoryReadProjection;
 use Scotty42\OrderIntegration\Cqrs\Write\BackpressurePolicy;
 use Scotty42\OrderIntegration\Cqrs\Write\InMemoryWriteQueue;
+use Scotty42\OrderIntegration\Cqrs\Write\WriteCommand;
 use Symfony\Component\HttpFoundation\Request;
 
 class CqrsGatewayTest extends TestCase
@@ -48,5 +49,85 @@ class CqrsGatewayTest extends TestCase
         $req->headers->set('Prefer', 'respond-sync');
 
         self::assertFalse($gw->wantsAsyncWrite($req), 'Prefer: respond-sync must force the synchronous path');
+    }
+
+    public function testWantsAsyncWriteReturnsTrueWhenDsnPresentAndAsyncFlagSet(): void
+    {
+        $_SERVER['ORDER_INTEGRATION_ASYNC_WRITES'] = 'true';
+
+        try {
+            $gw = $this->gateway('sqlite::memory:');
+
+            $req = Request::create('/api/order-integration/v1/orders', 'POST');
+            // No Prefer header — falls to env default
+
+            self::assertTrue($gw->wantsAsyncWrite($req), 'DSN present + async flag true must return true');
+        } finally {
+            unset($_SERVER['ORDER_INTEGRATION_ASYNC_WRITES']);
+            putenv('ORDER_INTEGRATION_ASYNC_WRITES');
+        }
+    }
+
+    public function testWantsAsyncWriteReturnsFalseWithNoPrefHeaderAndFlagOff(): void
+    {
+        $_SERVER['ORDER_INTEGRATION_ASYNC_WRITES'] = 'false';
+
+        try {
+            $gw = $this->gateway('sqlite::memory:');
+
+            $req = Request::create('/api/order-integration/v1/orders', 'POST');
+            // No Prefer header — falls to env default (false)
+
+            self::assertFalse($gw->wantsAsyncWrite($req), 'No Prefer header + async flag false must return false');
+        } finally {
+            unset($_SERVER['ORDER_INTEGRATION_ASYNC_WRITES']);
+            putenv('ORDER_INTEGRATION_ASYNC_WRITES');
+        }
+    }
+
+    public function testEnqueueOrderCreateReturnsWriteCommandWithCorrectType(): void
+    {
+        $gw = $this->gateway('sqlite::memory:');
+
+        $payload = ['salesChannelId' => str_repeat('a', 32)];
+        $command = $gw->enqueueOrderCreate($payload, 'idem-key-1');
+
+        self::assertInstanceOf(WriteCommand::class, $command);
+        self::assertSame(WriteCommand::TYPE_ORDER_CREATE, $command->type);
+        self::assertSame($payload, $command->payload);
+        self::assertSame('idem-key-1', $command->idempotencyKey);
+    }
+
+    public function testShouldShedReturnsTrueWhenQueueAtOrAboveMaxDepth(): void
+    {
+        $queue = new InMemoryWriteQueue();
+        // maxQueueDepth=0 means any depth (0) >= 0 triggers shedding
+        $backpressure = new BackpressurePolicy(maxQueueDepth: 0);
+        $gw = new CqrsGateway(
+            $queue,
+            new InMemoryReadProjection(),
+            $backpressure,
+            new PdoConnectionProvider('sqlite::memory:', null, null),
+        );
+
+        self::assertTrue($gw->shouldShed());
+    }
+
+    public function testShouldShedReturnsFalseWhenQueueBelowThreshold(): void
+    {
+        $gw = $this->gateway('sqlite::memory:');
+
+        // InMemoryWriteQueue starts empty; default maxQueueDepth=10000
+        self::assertFalse($gw->shouldShed());
+    }
+
+    public function testRetryAfterSecondsReturnsNonNegativeInteger(): void
+    {
+        $gw = $this->gateway('sqlite::memory:');
+
+        $seconds = $gw->retryAfterSeconds();
+
+        self::assertIsInt($seconds);
+        self::assertGreaterThanOrEqual(0, $seconds);
     }
 }

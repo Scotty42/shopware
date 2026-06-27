@@ -28,7 +28,12 @@ use Scotty42\OrderIntegration\Validator\QueryValidator;
 use Shopware\Core\Checkout\Order\OrderEntity;
 use Shopware\Core\Framework\Context;
 use Shopware\Core\Framework\DataAbstractionLayer\EntityRepository;
+use Shopware\Core\Framework\DataAbstractionLayer\Search\Criteria;
 use Shopware\Core\Framework\DataAbstractionLayer\Search\EntitySearchResult;
+use Shopware\Core\Framework\DataAbstractionLayer\Search\Filter\EqualsFilter;
+use Shopware\Core\Framework\DataAbstractionLayer\Search\Filter\MultiFilter;
+use Shopware\Core\Framework\DataAbstractionLayer\Search\Filter\RangeFilter;
+use Shopware\Core\Framework\DataAbstractionLayer\Search\Sorting\FieldSorting;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\Lock\LockFactory;
 use Symfony\Component\Lock\SharedLockInterface;
@@ -174,6 +179,27 @@ class OrderControllerTest extends TestCase
 
         $repo = $this->createMock(EntityRepository::class);
         $repo->method('search')->willReturn($result);
+
+        return $repo;
+    }
+
+    /**
+     * Build a mock EntityRepository that captures the Criteria passed to search()
+     * and returns the given order. $capturedCriteria is set by reference.
+     */
+    private function makeCapturingOrderRepo(?OrderEntity $order, ?Criteria &$capturedCriteria): EntityRepository
+    {
+        $result = $this->createStub(EntitySearchResult::class);
+        $result->method('first')->willReturn($order);
+        $result->method('getElements')->willReturn($order !== null ? [$order] : []);
+
+        $repo = $this->createMock(EntityRepository::class);
+        $repo->method('search')->willReturnCallback(
+            function (Criteria $criteria, $ctx) use ($result, &$capturedCriteria) {
+                $capturedCriteria = $criteria;
+                return $result;
+            }
+        );
 
         return $repo;
     }
@@ -348,6 +374,185 @@ class OrderControllerTest extends TestCase
         foreach ($body['items'] as $item) {
             self::assertArrayNotHasKey('_etag', $item);
         }
+    }
+
+    public function testListFilterByStatusAddsEqualsFilterOnStateMachineState(): void
+    {
+        $order = $this->makeOrderEntity();
+        $capturedCriteria = null;
+        $controller = $this->makeDefaultController(
+            orderRepo: $this->makeCapturingOrderRepo($order, $capturedCriteria),
+            cqrs: $this->makeCqrs(projectionReads: false),
+        );
+
+        $controller->list($this->makeRequest('GET', '', ['status' => 'open']), $this->context());
+
+        self::assertNotNull($capturedCriteria);
+        $found = false;
+        foreach ($capturedCriteria->getFilters() as $filter) {
+            if ($filter instanceof EqualsFilter && $filter->getField() === 'stateMachineState.technicalName') {
+                $found = true;
+                break;
+            }
+        }
+        self::assertTrue($found, 'Expected EqualsFilter on stateMachineState.technicalName for status filter');
+    }
+
+    public function testListFilterByCustomerIdAddsEqualsFilterOnOrderCustomer(): void
+    {
+        $order = $this->makeOrderEntity();
+        $capturedCriteria = null;
+        $controller = $this->makeDefaultController(
+            orderRepo: $this->makeCapturingOrderRepo($order, $capturedCriteria),
+            cqrs: $this->makeCqrs(projectionReads: false),
+        );
+
+        $controller->list($this->makeRequest('GET', '', ['customerId' => str_repeat('c', 32)]), $this->context());
+
+        self::assertNotNull($capturedCriteria);
+        $found = false;
+        foreach ($capturedCriteria->getFilters() as $filter) {
+            if ($filter instanceof EqualsFilter && $filter->getField() === 'orderCustomer.customerId') {
+                $found = true;
+                break;
+            }
+        }
+        self::assertTrue($found, 'Expected EqualsFilter on orderCustomer.customerId for customerId filter');
+    }
+
+    public function testListFilterBySalesChannelIdAddsEqualsFilter(): void
+    {
+        $order = $this->makeOrderEntity();
+        $capturedCriteria = null;
+        $controller = $this->makeDefaultController(
+            orderRepo: $this->makeCapturingOrderRepo($order, $capturedCriteria),
+            cqrs: $this->makeCqrs(projectionReads: false),
+        );
+
+        $controller->list($this->makeRequest('GET', '', ['salesChannelId' => str_repeat('d', 32)]), $this->context());
+
+        self::assertNotNull($capturedCriteria);
+        $found = false;
+        foreach ($capturedCriteria->getFilters() as $filter) {
+            if ($filter instanceof EqualsFilter && $filter->getField() === 'salesChannelId') {
+                $found = true;
+                break;
+            }
+        }
+        self::assertTrue($found, 'Expected EqualsFilter on salesChannelId');
+    }
+
+    public function testListFilterByCreatedAfterAddsRangeFilterGte(): void
+    {
+        $order = $this->makeOrderEntity();
+        $capturedCriteria = null;
+        $controller = $this->makeDefaultController(
+            orderRepo: $this->makeCapturingOrderRepo($order, $capturedCriteria),
+            cqrs: $this->makeCqrs(projectionReads: false),
+        );
+
+        $controller->list($this->makeRequest('GET', '', ['createdAfter' => '2024-01-01T00:00:00+00:00']), $this->context());
+
+        self::assertNotNull($capturedCriteria);
+        $found = false;
+        foreach ($capturedCriteria->getFilters() as $filter) {
+            if ($filter instanceof RangeFilter && $filter->getField() === 'createdAt') {
+                $params = $filter->getParameters();
+                if (isset($params[RangeFilter::GTE])) {
+                    $found = true;
+                    break;
+                }
+            }
+        }
+        self::assertTrue($found, 'Expected RangeFilter GTE on createdAt for createdAfter filter');
+    }
+
+    public function testListFilterByCreatedBeforeAddsRangeFilterLte(): void
+    {
+        $order = $this->makeOrderEntity();
+        $capturedCriteria = null;
+        $controller = $this->makeDefaultController(
+            orderRepo: $this->makeCapturingOrderRepo($order, $capturedCriteria),
+            cqrs: $this->makeCqrs(projectionReads: false),
+        );
+
+        $controller->list($this->makeRequest('GET', '', ['createdBefore' => '2024-12-31T23:59:59+00:00']), $this->context());
+
+        self::assertNotNull($capturedCriteria);
+        $found = false;
+        foreach ($capturedCriteria->getFilters() as $filter) {
+            if ($filter instanceof RangeFilter && $filter->getField() === 'createdAt') {
+                $params = $filter->getParameters();
+                if (isset($params[RangeFilter::LTE])) {
+                    $found = true;
+                    break;
+                }
+            }
+        }
+        self::assertTrue($found, 'Expected RangeFilter LTE on createdAt for createdBefore filter');
+    }
+
+    public function testListSortByUpdatedAtAscSetsCorrectSorting(): void
+    {
+        $order = $this->makeOrderEntity();
+        $capturedCriteria = null;
+        $controller = $this->makeDefaultController(
+            orderRepo: $this->makeCapturingOrderRepo($order, $capturedCriteria),
+            cqrs: $this->makeCqrs(projectionReads: false),
+        );
+
+        $controller->list($this->makeRequest('GET', '', ['sort' => 'updatedAt:asc']), $this->context());
+
+        self::assertNotNull($capturedCriteria);
+        $sortings = $capturedCriteria->getSorting();
+        self::assertNotEmpty($sortings);
+        $primary = $sortings[0];
+        self::assertSame('updatedAt', $primary->getField());
+        self::assertSame(FieldSorting::ASCENDING, $primary->getDirection());
+    }
+
+    public function testListSortByOrderNumberDescSetsCorrectSorting(): void
+    {
+        $order = $this->makeOrderEntity();
+        $capturedCriteria = null;
+        $controller = $this->makeDefaultController(
+            orderRepo: $this->makeCapturingOrderRepo($order, $capturedCriteria),
+            cqrs: $this->makeCqrs(projectionReads: false),
+        );
+
+        $controller->list($this->makeRequest('GET', '', ['sort' => 'orderNumber:desc']), $this->context());
+
+        self::assertNotNull($capturedCriteria);
+        $sortings = $capturedCriteria->getSorting();
+        self::assertNotEmpty($sortings);
+        $primary = $sortings[0];
+        self::assertSame('orderNumber', $primary->getField());
+        self::assertSame(FieldSorting::DESCENDING, $primary->getDirection());
+    }
+
+    public function testListWithCursorAddsMultiFilterForKeysetPagination(): void
+    {
+        $order = $this->makeOrderEntity();
+        $capturedCriteria = null;
+        $controller = $this->makeDefaultController(
+            orderRepo: $this->makeCapturingOrderRepo($order, $capturedCriteria),
+            cqrs: $this->makeCqrs(projectionReads: false),
+        );
+
+        $cursorData = ['field' => 'createdAt', 'value' => '2024-06-01T00:00:00+00:00', 'id' => str_repeat('a', 32), 'dir' => 'desc'];
+        $cursor = base64_encode(json_encode($cursorData));
+
+        $controller->list($this->makeRequest('GET', '', ['cursor' => $cursor]), $this->context());
+
+        self::assertNotNull($capturedCriteria);
+        $found = false;
+        foreach ($capturedCriteria->getFilters() as $filter) {
+            if ($filter instanceof MultiFilter) {
+                $found = true;
+                break;
+            }
+        }
+        self::assertTrue($found, 'Expected a MultiFilter for keyset pagination cursor');
     }
 
     // ── get() ─────────────────────────────────────────────────────────────────
