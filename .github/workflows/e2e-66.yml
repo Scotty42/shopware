@@ -62,7 +62,7 @@ jobs:
         run: |
           # Wait for Shopware web server to accept connections before seeding (max 2 min)
           for i in $(seq 1 40); do
-            curl -sf --max-time 5 "$SHOPWARE_URL/api/_info/version" > /dev/null 2>&1 && break
+            if curl -sf --max-time 5 "$SHOPWARE_URL/api/_info/version" > /dev/null 2>&1; then break; fi
             [ "$i" -eq 40 ] && { echo "FATAL: Shopware did not start after 2 minutes"; exit 1; }
             echo "Waiting for Shopware... ($i/40)"; sleep 3
           done
