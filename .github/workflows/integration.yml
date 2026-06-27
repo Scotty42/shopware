@@ -22,7 +22,7 @@ jobs:
     # Guarded so an accidental run is a clear no-op rather than a red X.
     if: ${{ vars.SHOPWARE_INTEGRATION_ENABLED == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # TODO(follow-up): provision Shopware 6.6 + MariaDB as service containers,
       # install + activate this plugin, then seed a product and sales channel.
