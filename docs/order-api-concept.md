@@ -323,6 +323,8 @@ Scope-based. The facade owns the mapping (client → allowed scopes → Shopware
 
 ## 7a. ERP integration — the primary integration
 
+> **Note:** The shipment-events endpoint (`POST /v1/shipment-events`) and the outbound webhook subscriptions described in this section are **not yet implemented**. This section documents the intended design for when they are built.
+
 The single most important consumer of this API is the ERP. It is also a producer: shipment status from fulfillment partners (FFP) flows back through the ERP into Shopware. Treating the ERP as "just another generic caller" is wrong; this section calls out the specifics.
 
 ### Data ownership

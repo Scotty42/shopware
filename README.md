@@ -75,6 +75,14 @@ public/staging URL (for example behind Cloudflare Access).
 
 No breaking changes were identified between 6.6.10 and 6.7.x for the services used by this plugin (`CartService`, `OrderPersister`, `OrderConverter`, `StateMachineRegistry`, `MultiFilter`).
 
+### Design invariants
+
+1. **No extra HTTP hop.** The plugin calls Shopware services in-process. Any change that introduces an Admin API call on the hot path breaks the performance model.
+2. **Shopware does the pricing.** `CartService` + `OrderConverter` are the only correct path for order creation. Do not implement price/tax logic in the plugin.
+3. **CQRS is opt-in.** Both flags default to off. With them off and no `ORDER_INTEGRATION_DB_DSN`, nothing touches Postgres and the plugin behaves synchronously — no new infra needed to run it.
+4. **Idempotency lives in the plugin, not in Shopware.** The `IdempotencyService` detects replays before a worker dispatches a command to Shopware. Re-execution against Shopware is avoided at the queue level.
+5. **RFC 9457 everywhere.** All error responses must be `application/problem+json` with `type`, `title`, `status`, `detail`, `code`. New endpoints must go through `ExceptionSubscriber`, not return ad-hoc JSON.
+
 ---
 
 ## Implemented endpoints
