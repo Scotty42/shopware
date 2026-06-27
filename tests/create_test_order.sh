@@ -23,7 +23,7 @@ if [[ -z "$STOREFRONT_URL" ]]; then
 fi
 
 # 1. Gast-Kontext anlegen
-CONTEXT_TOKEN=$(curl -sf -X GET "$SHOPWARE_URL/store-api/context" \
+CONTEXT_TOKEN=$(curl -sf --max-time 30 -X GET "$SHOPWARE_URL/store-api/context" \
   -H "sw-access-key: $SHOPWARE_STORE_ACCESS_KEY" \
   "${CF_ARGS[@]}" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
@@ -31,7 +31,7 @@ echo "Context token: $CONTEXT_TOKEN"
 
 # 2. Land-ID dynamisch ermitteln (vermeidet installations-spezifische UUIDs)
 COUNTRY_ISO="${SHOPWARE_TEST_COUNTRY_ISO:-DE}"
-COUNTRY_ID=$(curl -sf -X POST "$SHOPWARE_URL/store-api/country" \
+COUNTRY_ID=$(curl -sf --max-time 30 -X POST "$SHOPWARE_URL/store-api/country" \
   -H "sw-access-key: $SHOPWARE_STORE_ACCESS_KEY" \
   -H "sw-context-token: $CONTEXT_TOKEN" \
   -H "Content-Type: application/json" \
@@ -46,13 +46,13 @@ echo "Country ID ($COUNTRY_ISO): $COUNTRY_ID"
 HEADER_FILE=$(mktemp)
 trap 'rm -f "$HEADER_FILE"' EXIT
 
-curl -sf -D "$HEADER_FILE" -X POST "$SHOPWARE_URL/store-api/account/register" \
+curl -sf --max-time 30 -D "$HEADER_FILE" -X POST "$SHOPWARE_URL/store-api/account/register" \
   -H "sw-access-key: $SHOPWARE_STORE_ACCESS_KEY" \
   -H "sw-context-token: $CONTEXT_TOKEN" \
   -H "Content-Type: application/json" \
   "${CF_ARGS[@]}" \
   -d "{
-    \"email\": \"testorder+$(date +%s)@example.com\",
+    \"email\": \"testorder+$(python3 -c 'import uuid; print(uuid.uuid4().hex[:12])')@example.com\",
     \"password\": \"Test1234!\",
     \"guest\": true,
     \"firstName\": \"Test\",
@@ -74,7 +74,7 @@ fi
 echo "Guest registered, new token: $CONTEXT_TOKEN"
 
 # 4. Produkt in Cart legen
-curl -sf -X POST "$SHOPWARE_URL/store-api/checkout/cart/line-item" \
+curl -sf --max-time 30 -X POST "$SHOPWARE_URL/store-api/checkout/cart/line-item" \
   -H "sw-access-key: $SHOPWARE_STORE_ACCESS_KEY" \
   -H "sw-context-token: $CONTEXT_TOKEN" \
   -H "Content-Type: application/json" \
@@ -89,7 +89,7 @@ curl -sf -X POST "$SHOPWARE_URL/store-api/checkout/cart/line-item" \
 echo "Product added to cart"
 
 # 5. Order abschicken
-ORDER=$(curl -sf -X POST "$SHOPWARE_URL/store-api/checkout/order" \
+ORDER=$(curl -sf --max-time 30 -X POST "$SHOPWARE_URL/store-api/checkout/order" \
   -H "sw-access-key: $SHOPWARE_STORE_ACCESS_KEY" \
   -H "sw-context-token: $CONTEXT_TOKEN" \
   -H "Content-Type: application/json" \
