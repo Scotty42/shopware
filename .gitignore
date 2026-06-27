@@ -1,3 +1,4 @@
+docs/BACKLOG.md
 .env.test
 .env*.local
 vendor/
