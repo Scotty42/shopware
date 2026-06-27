@@ -1,6 +1,7 @@
 # Order Integration Plugin
 
 [![CI](https://github.com/Scotty42/shopware/actions/workflows/ci.yml/badge.svg)](https://github.com/Scotty42/shopware/actions/workflows/ci.yml)
+[![E2E 6.5](https://github.com/Scotty42/shopware/actions/workflows/e2e-65.yml/badge.svg)](https://github.com/Scotty42/shopware/actions/workflows/e2e-65.yml)
 [![E2E 6.6](https://github.com/Scotty42/shopware/actions/workflows/e2e-66.yml/badge.svg)](https://github.com/Scotty42/shopware/actions/workflows/e2e-66.yml)
 [![E2E 6.7](https://github.com/Scotty42/shopware/actions/workflows/e2e-67.yml/badge.svg)](https://github.com/Scotty42/shopware/actions/workflows/e2e-67.yml)
 [![codecov](https://codecov.io/gh/Scotty42/shopware/branch/main/graph/badge.svg)](https://codecov.io/gh/Scotty42/shopware)
@@ -69,6 +70,7 @@ public/staging URL (for example behind Cloudflare Access).
 
 | Version | Status |
 |---|---|
+| 6.5.x LTS (EOL Oct 2024) | Supported — CI-verified, no code changes required |
 | 6.6.x LTS | Supported (production target) |
 | 6.7.x | Supported (development environment) |
 | 6.8.x LTS | Planned migration target |
