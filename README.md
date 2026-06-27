@@ -5,6 +5,7 @@
 [![E2E 6.6](https://github.com/Scotty42/shopware/actions/workflows/e2e-66.yml/badge.svg)](https://github.com/Scotty42/shopware/actions/workflows/e2e-66.yml)
 [![E2E 6.7](https://github.com/Scotty42/shopware/actions/workflows/e2e-67.yml/badge.svg)](https://github.com/Scotty42/shopware/actions/workflows/e2e-67.yml)
 [![codecov](https://codecov.io/gh/Scotty42/shopware/branch/main/graph/badge.svg)](https://codecov.io/gh/Scotty42/shopware)
+<br>
 [![PHP 8.2](https://img.shields.io/github/check-run/Scotty42/shopware/main/PHPUnit%20%28PHP%208.2%29?label=PHP+8.2)](https://github.com/Scotty42/shopware/actions/workflows/ci.yml)
 [![PHP 8.3](https://img.shields.io/github/check-run/Scotty42/shopware/main/PHPUnit%20%28PHP%208.3%29?label=PHP+8.3)](https://github.com/Scotty42/shopware/actions/workflows/ci.yml)
 [![PHP 8.4](https://img.shields.io/github/check-run/Scotty42/shopware/main/PHPUnit%20%28PHP%208.4%29?label=PHP+8.4)](https://github.com/Scotty42/shopware/actions/workflows/ci.yml)
