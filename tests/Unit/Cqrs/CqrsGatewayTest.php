@@ -130,4 +130,62 @@ class CqrsGatewayTest extends TestCase
         self::assertIsInt($seconds);
         self::assertGreaterThanOrEqual(0, $seconds);
     }
+
+    public function testRespondAsyncHeaderWithDsnReturnsTrue(): void
+    {
+        $gw = $this->gateway('sqlite::memory:');
+
+        $req = Request::create('/api/order-integration/v1/orders', 'POST');
+        $req->headers->set('Prefer', 'respond-async');
+
+        self::assertTrue($gw->wantsAsyncWrite($req), 'Prefer: respond-async with DSN configured must return true');
+    }
+
+    public function testProjectionReadsEnabledReturnsTrueWhenFlagAndDsn(): void
+    {
+        $_SERVER['ORDER_INTEGRATION_PROJECTION_READS'] = 'true';
+
+        try {
+            $gw = $this->gateway('sqlite::memory:');
+
+            self::assertTrue($gw->projectionReadsEnabled());
+        } finally {
+            unset($_SERVER['ORDER_INTEGRATION_PROJECTION_READS']);
+            putenv('ORDER_INTEGRATION_PROJECTION_READS');
+        }
+    }
+
+    public function testGetProjectedOrderDelegatesToProjection(): void
+    {
+        $projection = new InMemoryReadProjection();
+        $projection->upsert(['id' => 'abc123', 'status' => 'open']);
+
+        $gw = new CqrsGateway(
+            new InMemoryWriteQueue(),
+            $projection,
+            new BackpressurePolicy(),
+            new PdoConnectionProvider('sqlite::memory:', null, null),
+        );
+
+        self::assertSame('open', $gw->getProjectedOrder('abc123')['status'] ?? null);
+        self::assertNull($gw->getProjectedOrder('nonexistent'));
+    }
+
+    public function testListProjectedDelegatesToProjection(): void
+    {
+        $projection = new InMemoryReadProjection();
+        $projection->upsert(['id' => 'aaa', 'status' => 'open', 'createdAt' => '2026-01-01T00:00:00+00:00']);
+        $projection->upsert(['id' => 'bbb', 'status' => 'open', 'createdAt' => '2026-01-02T00:00:00+00:00']);
+
+        $gw = new CqrsGateway(
+            new InMemoryWriteQueue(),
+            $projection,
+            new BackpressurePolicy(),
+            new PdoConnectionProvider('sqlite::memory:', null, null),
+        );
+
+        $result = $gw->listProjected(['status' => 'open'], 10, null);
+        self::assertCount(2, $result['items']);
+        self::assertNull($result['nextCursor']);
+    }
 }

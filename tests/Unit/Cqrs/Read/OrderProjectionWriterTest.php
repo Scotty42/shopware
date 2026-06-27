@@ -34,6 +34,20 @@ class OrderProjectionWriterTest extends TestCase
         self::assertSame('open', $stored['status'] ?? null, 'snapshot still carries the mapped payload');
     }
 
+    public function testRemoveDeletesFromProjection(): void
+    {
+        $mapper = new OrderMapper();
+        $projection = new InMemoryReadProjection();
+        $writer = new OrderProjectionWriter($projection, $mapper);
+
+        $order = $this->makeOrder();
+        $writer->apply($order);
+        self::assertNotNull($projection->get($order->getId()), 'order must exist after apply');
+
+        $writer->remove($order->getId());
+        self::assertNull($projection->get($order->getId()), 'order must be gone after remove');
+    }
+
     private function makeOrder(): OrderEntity
     {
         $order = new OrderEntity();
