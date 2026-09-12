@@ -37,6 +37,11 @@ jobs:
           install-admin: 'false'
           install-storefront: 'false'
           mysql-version: builtin
+          # Shopware core's own composer.json pins dompdf/dompdf to an exact
+          # version that Packagist now flags with security advisories, which
+          # blocks `composer update` before our plugin is even installed.
+          # This is shopware/setup-shopware's own escape hatch for that case.
+          allow-insecure-versions: 'true'
           path: shopware
 
       - name: Install plugin
